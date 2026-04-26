@@ -1,13 +1,13 @@
-name: Fetch AUR Package (uabea)
+name: Fetch AUR Package and Zip
 
 on:
-  workflow_dispatch:  
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  fetch-aur:
+  fetch-and-zip:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout your repository
@@ -17,23 +17,19 @@ jobs:
 
       - name: Clone AUR package (uabea)
         run: |
-          # Clone only the latest commit (depth 1) to save time
           git clone --depth 1 https://aur.archlinux.org/uabea.git aur_uabea_temp
 
-      - name: Prepare target folder
+      - name: Create ZIP archive
         run: |
-          rm -rf aur-packages/uabea
-          mkdir -p aur-packages/uabea
+          rm -f uabea-aur.zip
+          cd aur_uabea_temp
+          zip -r ../uabea-aur.zip . -x ".git/*"
+          cd ..
 
-      - name: Copy AUR files (excluding .git)
-        run: |
-          cp -r aur_uabea_temp/* aur-packages/uabea/
-          cp -r aur_uabea_temp/.[!.]* aur-packages/uabea/ 2>/dev/null || true  # hiden files : .SRCINFO
-
-      - name: Commit and push changes
+      - name: Commit and push the ZIP file
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add aur-packages/uabea/
-          git diff --cached --quiet || git commit -m "Update AUR files for uabea package"
+          git add uabea-aur.zip
+          git diff --cached --quiet || git commit -m "Update uabea AUR package zip"
           git push
