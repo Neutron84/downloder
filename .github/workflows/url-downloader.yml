@@ -1,4 +1,4 @@
-name: Fetch Any URL and Store in Repo
+name: 0-Fetch Any URL as Offline HTML (SingleFile)
 
 on:
   workflow_dispatch:
@@ -6,16 +6,16 @@ on:
       url:
         description: 'URL to fetch'
         required: true
-      max_depth:
-        description: 'wget recursive depth (default 1)'
+      filename:
+        description: 'Output filename (default: page)'
         required: false
-        default: '1'
+        default: 'page'
 
 permissions:
   contents: write
 
 jobs:
-  fetch:
+  fetch-offline:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -25,22 +25,30 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Download URL content
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install SingleFile CLI and dependencies
+        run: |
+          npm install -g single-file-cli
+          # Puppeteer will download Chromium automatically
+
+      - name: Download and save page as offline HTML
         run: |
           mkdir -p fetched_data
-          cd fetched_data
-          wget --recursive --level=${{ github.event.inputs.max_depth }} \
-               --no-parent --adjust-extension \
-               --page-requisites --convert-links \
-               --no-check-certificate \
-               "${{ github.event.inputs.url }}" 2>&1 || true
-          cd ..
+          single-file "${{ github.event.inputs.url }}" "fetched_data/${{ github.event.inputs.filename }}.html"
+          # SingleFile automatically inlines all assets
+
+      - name: Compress result (optional)
+        run: |
           tar czf fetched_content.tar.gz fetched_data/
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add fetched_content.tar.gz
-          git diff --cached --quiet || git commit -m "Fetch ${{ github.event.inputs.url }}"
+          git add fetched_content.tar.gz fetched_data/
+          git diff --cached --quiet || git commit -m "Offline snapshot of ${{ github.event.inputs.url }}"
           git push
