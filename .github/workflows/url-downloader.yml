@@ -1,0 +1,46 @@
+name: Fetch Any URL and Store in Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'URL to fetch'
+        required: true
+      max_depth:
+        description: 'wget recursive depth (default 1)'
+        required: false
+        default: '1'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Download URL content
+        run: |
+          mkdir -p fetched_data
+          cd fetched_data
+          wget --recursive --level=${{ github.event.inputs.max_depth }} \
+               --no-parent --adjust-extension \
+               --page-requisites --convert-links \
+               --no-check-certificate \
+               "${{ github.event.inputs.url }}" 2>&1 || true
+          cd ..
+          tar czf fetched_content.tar.gz fetched_data/
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add fetched_content.tar.gz
+          git diff --cached --quiet || git commit -m "Fetch ${{ github.event.inputs.url }}"
+          git push
