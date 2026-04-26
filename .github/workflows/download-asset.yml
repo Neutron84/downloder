@@ -1,29 +1,39 @@
-name: Download AssetRipper Linux ZIP
+name: Fetch AUR Package (uabea)
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:  
 
 permissions:
-  contents: write    
+  contents: write
 
 jobs:
-  download:
+  fetch-aur:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout your repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      - name: Download AssetRipper_linux_x64.zip
+      - name: Clone AUR package (uabea)
         run: |
-          curl -L -o AssetRipper_linux_x64.zip \
-          https://github.com/AssetRipper/AssetRipper/releases/download/1.3.14/AssetRipper_linux_x64.zip
+          # Clone only the latest commit (depth 1) to save time
+          git clone --depth 1 https://aur.archlinux.org/uabea.git aur_uabea_temp
 
-      - name: Commit and push if file changed
+      - name: Prepare target folder
+        run: |
+          rm -rf aur-packages/uabea
+          mkdir -p aur-packages/uabea
+
+      - name: Copy AUR files (excluding .git)
+        run: |
+          cp -r aur_uabea_temp/* aur-packages/uabea/
+          cp -r aur_uabea_temp/.[!.]* aur-packages/uabea/ 2>/dev/null || true  # hiden files : .SRCINFO
+
+      - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add AssetRipper_linux_x64.zip
-          git diff --cached --quiet || git commit -m "Download AssetRipper_linux_x64.zip v1.3.14"
+          git add aur-packages/uabea/
+          git diff --cached --quiet || git commit -m "Update AUR files for uabea package"
           git push
