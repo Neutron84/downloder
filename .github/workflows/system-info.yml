@@ -3,6 +3,9 @@ name: Collect System Information
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   collect-info:
     runs-on: ubuntu-latest
