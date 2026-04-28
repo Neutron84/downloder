@@ -1,9 +1,7 @@
 name: Collect System Information
 
 on:
-  workflow_dispatch:  
-permissions:
-  contents: write  
+  workflow_dispatch:
 
 jobs:
   collect-info:
@@ -16,22 +14,25 @@ jobs:
       - name: Install tools on Ubuntu
         run: |
           sudo apt-get update
-          sudo apt-get install -y fastfetch lscpu nmap procps
+          sudo apt-get install -y nmap procps
+          sudo add-apt-repository ppa:zhangsongcui3371/fastfetch -y
+          sudo apt-get update
+          sudo apt-get install -y fastfetch
 
       - name: Gather system information
         run: |
           mkdir -p reports
           echo "# System Report - $(date -u +'%Y-%m-%d %H:%M:%S UTC')" > reports/system-info.txt
-          echo "## Basic System Info" >> reports/system-info.txt
-          fastfetch --pipe --format json > reports/fastfetch.json 2>/dev/null || fastfetch > reports/fastfetch.txt 2>/dev/null || echo "fastfetch failed" >> reports/system-info.txt
-          echo -e "\n## CPU Information" >> reports/system-info.txt
+          echo "## fastfetch output" >> reports/system-info.txt
+          fastfetch --pipe --format json > reports/fastfetch.json 2>/dev/null || fastfetch > reports/fastfetch.txt 2>/dev/null
+          echo -e "\n## CPU Info (lscpu)" >> reports/system-info.txt
           lscpu >> reports/system-info.txt
-          echo -e "\n## Memory Information" >> reports/system-info.txt
+          echo -e "\n## Memory Info" >> reports/system-info.txt
           free -h >> reports/system-info.txt
           echo -e "\n## Network Interfaces" >> reports/system-info.txt
           ip addr show >> reports/system-info.txt 2>/dev/null || echo "ip command not available" >> reports/system-info.txt
           echo -e "\n## Nmap localhost scan" >> reports/system-info.txt
-          nmap -v -T4 -sS -sV -O localhost >> reports/system-info.txt 2>&1 || echo "nmap failed" >> reports/system-info.txt
+          nmap -v -T4 -sS -sV localhost >> reports/system-info.txt 2>&1 || echo "nmap failed" >> reports/system-info.txt
         continue-on-error: true
 
       - name: Commit and push changes
