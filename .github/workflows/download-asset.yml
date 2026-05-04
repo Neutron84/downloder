@@ -1,35 +1,43 @@
 name: Fetch AUR Package and Zip
 
 on:
-  workflow_dispatch:
-
+on:
+  workflow_dispatch: 
+    inputs:
+      url:
+        description: 'URL'
+        required: true
+      filename:
+        description: 'Output filename'
+        required: false
+        default: file1
 permissions:
   contents: write
 
 jobs:
   fetch-and-zip:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.inputs.filename }}-latest
     steps:
       - name: Checkout your repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
 
-      - name: Clone AUR package (uabea)
+      - name: Clone AUR package
         run: |
-          git clone --depth 1 https://aur.archlinux.org/uabea.git aur_uabea_temp
+          git clone --depth 1 ${{ github.event.inputs.url }} aur_${{ github.event.inputs.filename }}_temp
 
       - name: Create ZIP archive
         run: |
-          rm -f uabea-aur.zip
-          cd aur_uabea_temp
-          zip -r ../uabea-aur.zip . -x ".git/*"
+          rm -f ${{ github.event.inputs.filename }}-aur.zip
+          cd aur_${{ github.event.inputs.filename }}_temp
+          zip -r ../${{ github.event.inputs.filename }}-aur.zip . -x ".git/*"
           cd ..
 
       - name: Commit and push the ZIP file
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add uabea-aur.zip
-          git diff --cached --quiet || git commit -m "Update uabea AUR package zip"
+          git add ${{ github.event.inputs.filename }}-aur.zip 
+          git diff --cached --quiet || git commit -m "Update ${{ github.event.inputs.filename }} AUR package zip"
           git push
