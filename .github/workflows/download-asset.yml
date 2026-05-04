@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   fetch-and-zip:
-    runs-on: Clone AUR package latest
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout your repository
         uses: actions/checkout@v4
