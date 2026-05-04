@@ -1,0 +1,77 @@
+name: Build Arch Package and Commit to Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      pkgbuild_path:
+        description: 'Path to directory containing PKGBUILD and .SRCINFO'
+        required: false
+        default: '.'
+      clean_cache:
+        description: 'Clean build cache (makepkg -c)'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-commit:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --user root
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true 
+
+      - name: Set up build environment
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel sudo git
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: /usr/bin/pacman" >> /etc/sudoers
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Build package
+        working-directory: ${{ github.workspace }}/${{ github.event.inputs.pkgbuild_path }}
+        run: |
+          sudo -u builder bash << 'EOF'
+          set -e
+          makepkg -s --noconfirm
+          EOF
+        env:
+          PACKAGER: "GitHub Actions <actions@github.com>"
+
+      - name: Find generated package file
+        id: find_pkg
+        working-directory: ${{ github.workspace }}/${{ github.event.inputs.pkgbuild_path }}
+        run: |
+          PKG_FILE=$(find . -maxdepth 1 -name "*.pkg.tar.zst" -type f | head -n1)
+          if [ -z "$PKG_FILE" ]; then
+            echo "No package file found!"
+            exit 1
+          fi
+          echo "pkg_file=$PKG_FILE" >> $GITHUB_OUTPUT
+          echo "Found: $PKG_FILE"
+
+      - name: Move package to repository root (or specific folder)
+        working-directory: ${{ github.workspace }}/${{ github.event.inputs.pkgbuild_path }}
+        run: |
+          # حذف فایل بسته قدیمی در مخزن (اختیاری)
+          rm -f $GITHUB_WORKSPACE/*.pkg.tar.zst
+          # انتقال فایل جدید به ریشه مخزن
+          mv "${{ steps.find_pkg.outputs.pkg_file }}" $GITHUB_WORKSPACE/
+          # (اختیاری) اگر می‌خواهید در شاخه خاصی باشد، مسیر را تغییر دهید
+
+      - name: Commit and push package file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add *.pkg.tar.zst
+          git diff --cached --quiet || git commit -m "Update Arch package built from PKGBUILD (${GITHUB_SHA:0:7})"
+          git push origin HEAD:${GITHUB_REF_NAME}
