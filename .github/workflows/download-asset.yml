@@ -1,6 +1,6 @@
 name: Fetch AUR Package and Zip
 
-on:
+
 on:
   workflow_dispatch: 
     inputs:
