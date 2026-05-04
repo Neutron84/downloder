@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   fetch-and-zip:
-    runs-on: ${{ github.event.inputs.filename }}-latest
+    runs-on: Clone AUR package latest
     steps:
       - name: Checkout your repository
         uses: actions/checkout@v4
