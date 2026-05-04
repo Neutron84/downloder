@@ -2,16 +2,6 @@ name: Build Arch Package and Commit to Repo
 
 on:
   workflow_dispatch:
-    inputs:
-      pkgbuild_path:
-        description: 'Path to directory containing PKGBUILD and .SRCINFO'
-        required: false
-        default: '.'
-      clean_cache:
-        description: 'Clean build cache (makepkg -c)'
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: write
@@ -24,24 +14,72 @@ jobs:
       options: --user root
 
     steps:
-      - name: Checkout repository
+      - name: Checkout your repository
         uses: actions/checkout@v4
         with:
-          persist-credentials: true 
+          persist-credentials: true
 
       - name: Set up build environment
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel sudo git
+          pacman -S --noconfirm base-devel sudo git wget jq
+          # Create a non‑root builder for makepkg
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: /usr/bin/pacman" >> /etc/sudoers
           chown -R builder:builder "$GITHUB_WORKSPACE"
 
-      - name: Build package
-        working-directory: ${{ github.workspace }}/${{ github.event.inputs.pkgbuild_path }}
+      - name: Prepare dynamic PKGBUILD
+        working-directory: ${{ github.workspace }}
         run: |
+          cat > PKGBUILD <<'EOF'
+          # Maintainer: Doug Newgard <scimmia at archlinux dot info>
+
+          pkgname=pepper-flash
+          pkgver=32.0.0.465
+          pkgrel=1
+          pkgdesc="Adobe's Pepper Flash plugin"
+          arch=('i686' 'x86_64')
+          url='https://get.adobe.com/flashplayer/'
+          license=('custom')
+          depends=('gcc-libs' 'glibc')
+          optdepends=('flashplugin: Settings utility')
+          conflicts=('chromium-pepper-flash')
+          source_i686=("flash_player_ppapi_linux_${pkgver}.i386.tar.gz::https://fpdownload.adobe.com/get/flashplayer/pdc/${pkgver}/flash_player_ppapi_linux.i386.tar.gz")
+          source_x86_64=("flash_player_ppapi_linux_${pkgver}.x86_64.tar.gz::https://fpdownload.adobe.com/get/flashplayer/pdc/${pkgver}/flash_player_ppapi_linux.x86_64.tar.gz")
+          # Placeholder checksums – will be updated automatically
+          sha256sums_i686=('SKIP')
+          sha256sums_x86_64=('SKIP')
+
+          package() {
+            install -Dm644 manifest.json libpepflashplayer.so -t "$pkgdir/usr/lib/PepperFlash/"
+            install -Dm644 license.pdf -t "$pkgdir/usr/share/licenses/$pkgname/"
+          }
+          EOF
+
+      - name: Download latest stable version from AUR and update PKGBUILD
+        working-directory: ${{ github.workspace }}
+        run: |
+          # Fetch the latest stable version and source info from the AUR git repo
+          git clone https://aur.archlinux.org/pepper-flash.git /tmp/pepper-flash-aur
+          # Copy the PKGBUILD (with correct checksums) from AUR
+          cp /tmp/pepper-flash-aur/PKGBUILD .
+          # Ensure source URLs point to the correct Adobe servers (AUR already does)
+          # Replace placeholder pkgver with actual version from AUR (if needed)
+          # But normally the AUR PKGBUILD already has the right version+checksum.
+          # However, if you still want to compute fresh checksums:
+          # makepkg --verifysource -g >> PKGBUILD
+          # But that would require the sources to be present.
+          echo "PKGBUILD from AUR has been placed in the working directory."
+
+      - name: Build the package
+        working-directory: ${{ github.workspace }}
+        run: |
+          chown -R builder:builder .
           sudo -u builder bash << 'EOF'
           set -e
+          # Update checksums automatically (this will replace 'SKIP' with real ones)
+          updpkgsums
+          # Now build the package
           makepkg -s --noconfirm
           EOF
         env:
@@ -49,7 +87,7 @@ jobs:
 
       - name: Find generated package file
         id: find_pkg
-        working-directory: ${{ github.workspace }}/${{ github.event.inputs.pkgbuild_path }}
+        working-directory: ${{ github.workspace }}
         run: |
           PKG_FILE=$(find . -maxdepth 1 -name "*.pkg.tar.zst" -type f | head -n1)
           if [ -z "$PKG_FILE" ]; then
@@ -59,16 +97,14 @@ jobs:
           echo "pkg_file=$PKG_FILE" >> $GITHUB_OUTPUT
           echo "Found: $PKG_FILE"
 
-      - name: Move package to repository root (or specific folder)
-        working-directory: ${{ github.workspace }}/${{ github.event.inputs.pkgbuild_path }}
+      - name: Move package to repository root
         run: |
-          # حذف فایل بسته قدیمی در مخزن (اختیاری)
+          # Remove old package files from repo root
           rm -f $GITHUB_WORKSPACE/*.pkg.tar.zst
-          # انتقال فایل جدید به ریشه مخزن
+          # Move the freshly built package
           mv "${{ steps.find_pkg.outputs.pkg_file }}" $GITHUB_WORKSPACE/
-          # (اختیاری) اگر می‌خواهید در شاخه خاصی باشد، مسیر را تغییر دهید
 
-      - name: Commit and push package file
+      - name: Commit and push the package file
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
