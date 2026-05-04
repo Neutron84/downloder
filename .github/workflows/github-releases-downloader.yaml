@@ -22,7 +22,7 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Download ${{ github.event.inputs.filename }}.zip
+      - name: Clone AUR package
         run: |
          mkdir -p github_releases
           curl -L -o github_releases/${{ github.event.inputs.filename }}.zip \
