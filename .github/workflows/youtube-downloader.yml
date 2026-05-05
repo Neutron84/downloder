@@ -1,0 +1,118 @@
+name: YouTube Video Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      quality:
+        description: 'Video quality'
+        required: false
+        default: 'best'
+        type: choice
+        options:
+          - best
+          - 2160p (4K)
+          - 1440p (2K)
+          - 1080p (FHD)
+          - 720p (HD)
+          - 480p (SD)
+          - 360p
+          - audio only (mp3)
+
+env:
+  OUTPUT_DIR: youtube
+
+jobs:
+  download-youtube:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup yt-dlp
+        uses: AnimMouse/setup-yt-dlp@v3
+
+      - name: Install FFmpeg (if not installed)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Prepare format selector
+        id: format
+        run: |
+          QUALITY="${{ github.event.inputs.quality }}"
+          case "$QUALITY" in
+            "best")
+              echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT
+              ;;
+            "2160p (4K)")
+              echo "format=bestvideo[height<=2160]+bestaudio/best" >> $GITHUB_OUTPUT
+              ;;
+            "1440p (2K)")
+              echo "format=bestvideo[height<=1440]+bestaudio/best" >> $GITHUB_OUTPUT
+              ;;
+            "1080p (FHD)")
+              echo "format=bestvideo[height<=1080]+bestaudio/best" >> $GITHUB_OUTPUT
+              ;;
+            "720p (HD)")
+              echo "format=bestvideo[height<=720]+bestaudio/best" >> $GITHUB_OUTPUT
+              ;;
+            "480p (SD)")
+              echo "format=bestvideo[height<=480]+bestaudio/best" >> $GITHUB_OUTPUT
+              ;;
+            "360p")
+              echo "format=bestvideo[height<=360]+bestaudio/best" >> $GITHUB_OUTPUT
+              ;;
+            "audio only (mp3)")
+              echo "format=bestaudio" >> $GITHUB_OUTPUT
+              echo "extract_audio=true" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: Create output directory
+        run: mkdir -p ${{ env.OUTPUT_DIR }}
+
+      - name: Download video
+        run: |
+          cd ${{ env.OUTPUT_DIR }}
+          URL="${{ github.event.inputs.video_url }}"
+          FORMAT="${{ steps.format.outputs.format }}"
+          EXTRACT_AUDIO="${{ steps.format.outputs.extract_audio }}"
+          
+          if [ "$EXTRACT_AUDIO" = "true" ]; then
+            yt-dlp -f "$FORMAT" \
+                   --extract-audio \
+                   --audio-format mp3 \
+                   --audio-quality 0 \
+                   --embed-thumbnail \
+                   --add-metadata \
+                   --output "%(title)s.%(ext)s" \
+                   "$URL"
+          else
+            yt-dlp -f "$FORMAT" \
+                   --merge-output-format mp4 \
+                   --embed-thumbnail \
+                   --add-metadata \
+                   --output "%(title)s.%(ext)s" \
+                   "$URL"
+          fi
+
+      - name: Commit and push video
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.OUTPUT_DIR }}
+          git diff --cached --quiet || git commit -m "Add YouTube video: ${{ github.event.inputs.video_url }}"
+          git push
