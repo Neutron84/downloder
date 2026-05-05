@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'YouTube video URL'
+        description: "YouTube video URL"
         required: true
         type: string
       quality:
-        description: 'Video quality'
+        description: "Video quality"
         required: false
-        default: '1080p'
+        default: "1080p"
         type: choice
         options:
           - max
@@ -25,9 +25,9 @@ on:
           - 144p
           - Audio Only
       audio_format:
-        description: 'Audio format (when Audio Only selected)'
+        description: "Audio format (when Audio Only selected)"
         required: false
-        default: 'mp3'
+        default: "mp3"
         type: choice
         options:
           - mp3
@@ -36,16 +36,16 @@ on:
           - opus
           - best
       api_url:
-        description: 'Cobalt API URL (use your self-hosted instance for best stability)'
+        description: "Cobalt API URL (use your self-hosted instance for best stability)"
         required: false
-        default: 'https://api.cobalt.tools'
+        default: "https://api.cobalt.tools"
         type: string
       api_key:
-        description: 'API Key (if your instance requires it)'
+        description: "API Key (if your instance requires it)"
         required: false
         type: string
       bearer_token:
-        description: 'Bearer Token (if your instance requires it)'
+        description: "Bearer Token (if your instance requires it)"
         required: false
         type: string
 
@@ -108,22 +108,23 @@ jobs:
       - name: Build API request payload
         id: payload
         run: |
-          IS_AUDIO="${{ steps.quality.outputs.is_audio }}"
-          VIDEO_QUALITY="${{ steps.quality.outputs.video_quality }}"
-          AUDIO_FORMAT="${{ steps.audio.outputs.audio_format }}"
+            IS_AUDIO="${{ steps.quality.outputs.is_audio }}"
+             VIDEO_QUALITY="${{ steps.quality.outputs.video_quality }}"
+            AUDIO_FORMAT="${{ steps.audio.outputs.audio_format }}"
 
-          if [[ "$IS_AUDIO" == "true" ]]; then
-            PAYLOAD=$(jq -n \
-              --arg url "${{ github.event.inputs.video_url }}" \
-              --arg audioFormat "$AUDIO_FORMAT" \
-              '{url: $url, downloadMode: "audio", audioFormat: $audioFormat}')
-          else
-            PAYLOAD=$(jq -n \
-              --arg url "${{ github.event.inputs.video_url }}" \
-              --arg videoQuality "$VIDEO_QUALITY" \
-              '{url: $url, videoQuality: $videoQuality}')
-          fi
-          echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
+            if [[ "$IS_AUDIO" == "true" ]]; then
+                PAYLOAD=$(jq -c -n \
+                --arg url "${{ github.event.inputs.video_url }}" \
+                --arg audioFormat "$AUDIO_FORMAT" \
+                '{url: $url, downloadMode: "audio", audioFormat: $audioFormat}')
+            else
+                PAYLOAD=$(jq -c -n \
+                --arg url "${{ github.event.inputs.video_url }}" \
+                --arg videoQuality "$VIDEO_QUALITY" \
+                '{url: $url, videoQuality: $videoQuality}')
+            fi
+
+            echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
 
       - name: Call Cobalt API
         id: api
