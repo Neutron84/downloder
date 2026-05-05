@@ -38,19 +38,19 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # 1. نصب Deno (برای اجرای جاوااسکریپت yt-dlp)
+      # نصب Deno (برای JavaScript runtime مورد نیاز yt-dlp)
       - name: Install Deno
         run: |
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
 
-      # 2. نصب yt-dlp از pip
+      # نصب yt-dlp از pip
       - name: Install yt-dlp
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install "yt-dlp[default,curl-cffi]"
 
-      # 3. نصب سریع ffmpeg (باینری استاتیک، <10 ثانیه)
+      # نصب سریع ffmpeg (کمتر از 10 ثانیه)
       - name: Install ffmpeg static
         run: |
           curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar xJ
@@ -58,17 +58,17 @@ jobs:
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
           ffmpeg -version | head -1
 
-      # 4. ذخیره کوکی از Secret (فرمت Netscape)
+      # ذخیره کوکی از Secret
       - name: Save cookies.txt
         run: |
           if [ -n "${{ secrets.YT_COOKIES }}" ]; then
             echo "${{ secrets.YT_COOKIES }}" > cookies.txt
             echo "✅ Cookies file created (size: $(wc -c < cookies.txt) bytes)"
           else
-            echo "⚠️ WARNING: No YT_COOKIES secret found. YouTube may block."
+            echo "⚠️ No YT_COOKIES secret. YouTube may block."
           fi
 
-      # 5. استخراج عنوان ویدیو (با مدیریت خطا)
+      # استخراج عنوان ویدیو (با استفاده مستقیم از yt-dlp)
       - name: Get video title
         id: title
         run: |
@@ -76,20 +76,13 @@ jobs:
           SAFE_TITLE="youtube_$(date +%Y%m%d_%H%M%S)"
           RAW_TITLE=""
 
+          # فراخوانی مستقیم yt-dlp با پشتیبانی از Deno
+          YT_CMD="yt-dlp --js-runtimes deno --extractor-args youtube:player_client=android"
           if [ -f cookies.txt ]; then
-            # تلاش با کوکی و کلاینت اندروید
-            TITLE=$(deno run --allow-net --allow-read --allow-env $(which yt-dlp) \
-              --cookies cookies.txt \
-              --extractor-args "youtube:player_client=android" \
-              --get-title "$URL" 2>/dev/null) \
-              || TITLE=""
-          else
-            TITLE=$(deno run --allow-net --allow-read --allow-env $(which yt-dlp) \
-              --extractor-args "youtube:player_client=android" \
-              --get-title "$URL" 2>/dev/null) \
-              || TITLE=""
+            YT_CMD="$YT_CMD --cookies cookies.txt"
           fi
 
+          TITLE=$($YT_CMD --get-title "$URL" 2>/dev/null) || TITLE=""
           if [ -n "$TITLE" ]; then
             RAW_TITLE="$TITLE"
             SAFE_TITLE=$(echo "$TITLE" | sed 's/[\\/:*?"<>|]/_/g' | tr -d '\n' | head -c 200)
@@ -101,7 +94,7 @@ jobs:
           echo "safe_title=$SAFE_TITLE" >> $GITHUB_OUTPUT
           echo "raw_title=$RAW_TITLE" >> $GITHUB_OUTPUT
 
-      # 6. انتخاب فرمت بر اساس کیفیت
+      # انتخاب فرمت بر اساس کیفیت
       - name: Prepare format options
         id: format
         run: |
@@ -137,7 +130,7 @@ jobs:
               ;;
           esac
 
-      # 7. دانلود و پردازش نهایی
+      # دانلود ویدیو یا صدا
       - name: Download video/audio
         run: |
           mkdir -p ${{ env.OUTPUT_DIR }}
@@ -148,47 +141,25 @@ jobs:
           SAFE_TITLE="${{ steps.title.outputs.safe_title }}"
           OUTPUT_EXT="${{ steps.format.outputs.output_ext }}"
 
-          # ساخت دستور پایه
-          YTDL_CMD="deno run --allow-net --allow-read --allow-write --allow-env $(which yt-dlp)"
-
-          OPTS=(
-            --no-mtime
-            --ignore-errors
-            --retries 5
-            --fragment-retries 5
-            --sleep-interval 3
-            --max-sleep-interval 6
-            --limit-rate 2M
-            --add-metadata
-            --embed-thumbnail
-            --embed-chapters
-            --extractor-args "youtube:player_client=android"
-            --output "$SAFE_TITLE.%(ext)s"
-          )
-
+          # ساختار پایه دستور yt-dlp با پشتیبانی از Deno
+          YT_CMD="yt-dlp --js-runtimes deno --extractor-args youtube:player_client=android"
           if [ -f ../cookies.txt ]; then
-            OPTS+=(--cookies ../cookies.txt)
+            YT_CMD="$YT_CMD --cookies ../cookies.txt"
           fi
+
+          COMMON_OPTS="--no-mtime --ignore-errors --retries 5 --fragment-retries 5 --sleep-interval 3 --max-sleep-interval 6 --limit-rate 2M --add-metadata --embed-thumbnail --embed-chapters --output \"$SAFE_TITLE.%(ext)s\""
 
           if [ "$IS_AUDIO" = "true" ]; then
             echo "🎵 Downloading audio only (MP3)..."
-            $YTDL_CMD "${OPTS[@]}" \
-              -f "$FORMAT" \
-              --extract-audio \
-              --audio-format mp3 \
-              --audio-quality 0 \
-              "$URL"
+            eval $YT_CMD $COMMON_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
           else
             echo "🎬 Downloading video + audio (${OUTPUT_EXT^^})..."
-            $YTDL_CMD "${OPTS[@]}" \
-              -f "$FORMAT" \
-              --merge-output-format "$OUTPUT_EXT" \
-              "$URL"
+            eval $YT_CMD $COMMON_OPTS -f "$FORMAT" --merge-output-format "$OUTPUT_EXT" "$URL"
           fi
 
           echo "✅ Download completed. Files in ${{ env.OUTPUT_DIR }}/"
 
-      # 8. ارسال به مخزن گیت‌هاب
+      # کامیت و push به مخزن
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
