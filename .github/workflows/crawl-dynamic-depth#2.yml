@@ -1,4 +1,4 @@
-name: Crawl Dynamic Website with Depth and Scroll (Fixed)
+name: Crawl Dynamic Website with Depth and Scroll
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
       scroll_limit:
         description: 'Number of scrolls per page (for infinite scroll)'
         required: false
-        default: '10'
+        default: '15'
         type: string
       scroll_pause_ms:
         description: 'Pause between scrolls (milliseconds)'
@@ -60,14 +60,13 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Puppeteer, cheerio and system dependencies
+      - name: Install Puppeteer, cheerio and Chromium
         run: |
           npm install puppeteer cheerio
           sudo apt-get update
-          sudo apt-get install -y \
-            libgbm-dev libxshmfence-dev libnss3 libatk-bridge2.0-0 \
-            libdrm2 libxkbcommon0 libgbm1 libasound2 libxcomposite1 \
-            libxdamage1 libxfixes3 libxrandr2 libxtst6
+          sudo apt-get install -y chromium
+          # Create symlink for Puppeteer to find Chromium
+          sudo ln -sf /usr/bin/chromium /usr/bin/chromium-browser
 
       - name: Create output directory
         run: mkdir -p "${{ github.event.inputs.output_dir }}"
@@ -92,10 +91,30 @@ jobs:
           const crypto = require('crypto');
           const execPromise = promisify(exec);
 
+          // Helper: parse srcset string into array of URLs
+          function parseSrcset(srcset) {
+            if (!srcset) return [];
+            return srcset.split(',').map(part => {
+              const trimmed = part.trim();
+              const urlPart = trimmed.split(/\s+/)[0];
+              return urlPart;
+            }).filter(u => u);
+          }
+
+          // Helper: remove query string and fragment for matching
+          function normalizeUrlForMatch(url) {
+            try {
+              const u = new URL(url);
+              return u.origin + u.pathname;
+            } catch (e) {
+              return url.split('?')[0].split('#')[0];
+            }
+          }
+
           (async () => {
             const startUrl = process.env.TARGET_URL;
             const maxDepth = parseInt(process.env.CRAWL_DEPTH, 10) || 1;
-            const scrollLimit = parseInt(process.env.SCROLL_LIMIT, 10) || 10;
+            const scrollLimit = parseInt(process.env.SCROLL_LIMIT, 10) || 15;
             const scrollPauseMs = parseInt(process.env.SCROLL_PAUSE_MS, 10) || 2000;
             const waitSelector = process.env.WAIT_SELECTOR || '';
             const outDir = process.env.OUTPUT_DIR;
@@ -103,40 +122,65 @@ jobs:
 
             const browser = await puppeteer.launch({
               headless: true,
+              executablePath: '/usr/bin/chromium',
               args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
 
-            const resourceMap = new Map(); // absoluteUrl -> {body, contentType}
-            let pendingResources = [];
+            const resourceMap = new Map(); // normalizedUrl -> {body, contentType, originalUrl}
+            let activeRequests = 0;
+            let resolveIdle = null;
+            let idlePromise = Promise.resolve();
 
-            function captureResource(url, contentType, bufferPromise) {
-              const p = bufferPromise.then(buffer => {
-                resourceMap.set(url, { body: buffer, contentType });
-                return true;
-              }).catch(err => console.warn(`Failed to capture ${url}: ${err.message}`));
-              pendingResources.push(p);
-              return p;
+            function startRequest() {
+              activeRequests++;
+            }
+            function finishRequest() {
+              activeRequests--;
+              if (activeRequests === 0 && resolveIdle) {
+                resolveIdle();
+                resolveIdle = null;
+              }
+            }
+            async function waitForAllRequests() {
+              if (activeRequests === 0) return;
+              return new Promise(resolve => {
+                resolveIdle = resolve;
+              });
             }
 
             const visited = new Set();
             const queue = [{ url: startUrl, depth: 0 }];
             const pageMap = new Map(); // finalUrl -> localHtmlFile
-            const urlToLocalPage = new Map();
 
             async function processPage(pageUrl, currentDepth) {
               const page = await browser.newPage();
               await page.setRequestInterception(true);
-              page.on('request', req => req.continue());
-
+              page.on('request', req => {
+                startRequest();
+                req.continue();
+              });
+              page.on('requestfailed', () => finishRequest());
               page.on('response', async response => {
                 const respUrl = response.url();
                 const contentType = response.headers()['content-type'] || '';
                 const ext = path.extname(new URL(respUrl).pathname).toLowerCase();
                 const isHtml = contentType.includes('text/html') || ext === '.html' || ext === '.htm';
                 if (!isHtml) {
-                  captureResource(respUrl, contentType, response.buffer());
+                  const normalized = normalizeUrlForMatch(respUrl);
+                  captureResource(normalized, contentType, response.buffer(), respUrl);
                 }
+                finishRequest();
               });
+
+              function captureResource(normalizedUrl, contentType, bufferPromise, originalUrl) {
+                const p = bufferPromise.then(buffer => {
+                  if (!resourceMap.has(normalizedUrl)) {
+                    resourceMap.set(normalizedUrl, { body: buffer, contentType, originalUrl });
+                  }
+                  return true;
+                }).catch(err => console.warn(`Failed to capture ${normalizedUrl}: ${err.message}`));
+                // No need to store in pending array; we wait via activeRequests counter
+              }
 
               if (cookiesFilePath && cookiesFilePath.trim() !== '') {
                 try {
@@ -174,7 +218,7 @@ jobs:
                 return null;
               }
               visited.add(finalUrl);
-              console.log(`[${currentDepth}] Processing final URL: ${finalUrl}`);
+              console.log(`[${currentDepth}] Processing: ${finalUrl}`);
 
               if (waitSelector) {
                 await page.waitForSelector(waitSelector, { timeout: 10000 }).catch(() => {});
@@ -194,12 +238,48 @@ jobs:
               }
 
               await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
-              await Promise.all(pendingResources);
-              pendingResources = [];
-              await new Promise(r => setTimeout(r, 500));
+              await waitForAllRequests();
+
+              // Extract all CSS URLs from inline and external stylesheets
+              const cssUrls = await page.evaluate(() => {
+                const urls = new Set();
+                // External stylesheets
+                document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
+                  if (link.href) urls.add(link.href);
+                });
+                // Inline stylesheets content (search for url(...))
+                document.querySelectorAll('style').forEach(style => {
+                  const text = style.textContent;
+                  if (text) {
+                    const matches = text.match(/url\([\'"]?([^\'")]+)[\'"]?\)/g);
+                    if (matches) {
+                      matches.forEach(m => {
+                        const u = m.replace(/url\([\'"]?/, '').replace(/[\'"]?\)/, '');
+                        if (u && !u.startsWith('data:')) urls.add(u);
+                      });
+                    }
+                  }
+                });
+                return Array.from(urls);
+              });
+
+              // Capture those CSS URLs by creating temporary image elements to trigger network requests
+              for (const cssUrl of cssUrls) {
+                try {
+                  // Resolve relative URL
+                  const absolute = new URL(cssUrl, finalUrl).href;
+                  const normalized = normalizeUrlForMatch(absolute);
+                  if (!resourceMap.has(normalized)) {
+                    // Trigger a fetch via page.evaluate to force network request
+                    await page.evaluate(async (url) => {
+                      await fetch(url, { mode: 'no-cors' });
+                    }, absolute).catch(() => {});
+                  }
+                } catch(e) {}
+              }
+              await waitForAllRequests();
 
               const html = await page.content();
-
               const links = await page.evaluate(() => {
                 const anchors = Array.from(document.querySelectorAll('a[href]'));
                 return anchors
@@ -212,7 +292,6 @@ jobs:
               const urlHash = crypto.createHash('md5').update(finalUrl).digest('hex').slice(0, 12);
               const localFileName = `page_${urlHash}.html`;
               pageMap.set(finalUrl, localFileName);
-
               return { html, links, localFileName, finalUrl };
             }
 
@@ -222,7 +301,6 @@ jobs:
               const { url: currentUrl, depth } = queue[idx];
               idx++;
               if (depth > maxDepth) continue;
-
               const result = await processPage(currentUrl, depth);
               if (result) {
                 pagesData.push({
@@ -250,8 +328,8 @@ jobs:
             const assetsDir = path.join(tempDir, 'assets');
             await fs.mkdir(assetsDir, { recursive: true });
 
-            const urlToAssetPath = new Map();
-            for (const [resUrl, data] of resourceMap.entries()) {
+            const urlToAssetPath = new Map(); // normalizedUrl -> relative path
+            for (const [normUrl, data] of resourceMap.entries()) {
               let ext = '';
               const contentType = data.contentType;
               if (contentType.includes('css')) ext = '.css';
@@ -268,16 +346,16 @@ jobs:
               else if (contentType.includes('font/woff2')) ext = '.woff2';
               else if (contentType.includes('font/woff')) ext = '.woff';
               else {
-                const parsed = new URL(resUrl);
+                const parsed = new URL(data.originalUrl || normUrl);
                 const parsedExt = path.extname(parsed.pathname);
                 ext = parsedExt || '.bin';
               }
-              const hash = crypto.createHash('md5').update(resUrl).digest('hex').slice(0, 12);
+              const hash = crypto.createHash('md5').update(normUrl).digest('hex').slice(0, 12);
               const assetFileName = `${hash}${ext}`;
               const assetRelPath = path.join('assets', assetFileName);
               const fullAssetPath = path.join(tempDir, assetRelPath);
               await fs.writeFile(fullAssetPath, data.body);
-              urlToAssetPath.set(resUrl, assetRelPath);
+              urlToAssetPath.set(normUrl, assetRelPath);
             }
 
             function resolveUrl(base, relative) {
@@ -292,34 +370,46 @@ jobs:
               const $ = cheerio.load(pageInfo.html);
               const pageBase = pageInfo.url;
 
+              // Process simple attributes
               const attributesToCheck = [
                 { selector: 'img', attr: 'src' },
-                { selector: 'img', attr: 'srcset' },
+                { selector: 'img', attr: 'srcset', isSrcset: true },
+                { selector: 'source', attr: 'srcset', isSrcset: true },
                 { selector: 'link', attr: 'href' },
                 { selector: 'script', attr: 'src' },
                 { selector: 'video', attr: 'src' },
-                { selector: 'source', attr: 'src' },
-                { selector: 'source', attr: 'srcset' },
                 { selector: 'audio', attr: 'src' },
                 { selector: 'object', attr: 'data' },
                 { selector: 'embed', attr: 'src' },
                 { selector: 'iframe', attr: 'src' }
               ];
 
-              for (const { selector, attr } of attributesToCheck) {
+              for (const { selector, attr, isSrcset } of attributesToCheck) {
                 $(selector).each((i, el) => {
                   let val = $(el).attr(attr);
-                  if (val) {
+                  if (!val) return;
+                  if (isSrcset) {
+                    const urls = parseSrcset(val);
+                    let newSrcset = val;
+                    for (const url of urls) {
+                      const absolute = resolveUrl(pageBase, url);
+                      const normalized = normalizeUrlForMatch(absolute);
+                      if (urlToAssetPath.has(normalized)) {
+                        newSrcset = newSrcset.replace(url, urlToAssetPath.get(normalized));
+                      }
+                    }
+                    if (newSrcset !== val) $(el).attr(attr, newSrcset);
+                  } else {
                     const absolute = resolveUrl(pageBase, val);
-                    if (urlToAssetPath.has(absolute)) {
-                      $(el).attr(attr, urlToAssetPath.get(absolute));
-                    } else if (urlToAssetPath.has(val)) {
-                      $(el).attr(attr, urlToAssetPath.get(val));
+                    const normalized = normalizeUrlForMatch(absolute);
+                    if (urlToAssetPath.has(normalized)) {
+                      $(el).attr(attr, urlToAssetPath.get(normalized));
                     }
                   }
                 });
               }
 
+              // Inline style handling
               $('[style]').each((i, el) => {
                 let style = $(el).attr('style');
                 if (style) {
@@ -328,8 +418,9 @@ jobs:
                     for (const match of urlMatches) {
                       const urlPart = match.replace(/url\([\'"]?/, '').replace(/[\'"]?\)/, '');
                       const absolute = resolveUrl(pageBase, urlPart);
-                      if (urlToAssetPath.has(absolute)) {
-                        const newMatch = `url("${urlToAssetPath.get(absolute)}")`;
+                      const normalized = normalizeUrlForMatch(absolute);
+                      if (urlToAssetPath.has(normalized)) {
+                        const newMatch = `url("${urlToAssetPath.get(normalized)}")`;
                         style = style.replace(match, newMatch);
                       }
                     }
@@ -338,6 +429,7 @@ jobs:
                 }
               });
 
+              // Inter-page links
               for (const [targetUrl, targetLocalFile] of pageMap.entries()) {
                 if (targetUrl !== pageInfo.url) {
                   $('a[href]').each((i, el) => {
