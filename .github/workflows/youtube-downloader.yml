@@ -1,4 +1,4 @@
-name: YouTube Video Downloader
+name: YouTube Video Downloader (with Cookies)
 
 on:
   workflow_dispatch:
@@ -13,20 +13,19 @@ on:
         default: '1080p (FHD)'
         type: choice
         options:
-          - best
           - 2160p (4K)
           - 1440p (2K)
           - 1080p (FHD)
           - 720p (HD)
           - 480p (SD)
           - 360p
-          - audio only (mp3)
+          - Audio Only (MP3)
 
 env:
   OUTPUT_DIR: youtube
 
 jobs:
-  download-youtube:
+  download:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,35 +38,49 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install Deno (JS runtime for yt-dlp)
+      - name: Install Deno (JavaScript runtime for yt-dlp)
         run: |
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
 
-      - name: Install yt-dlp via pip (includes JS solvers)
+      - name: Install yt-dlp via pip
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install "yt-dlp[default]"
 
-      # نصب یک باینری static و سریع از ffmpeg
-      - name: Install ffmpeg static
+      - name: Install static ffmpeg (fast)
         run: |
           curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar xJ
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
           ffmpeg -version | head -1
 
+      - name: Save cookies from secret
+        run: |
+          if [ -n "${{ secrets.YT_COOKIES }}" ]; then
+            echo "${{ secrets.YT_COOKIES }}" > cookies.txt
+            echo "✅ Cookies file created ($(wc -l < cookies.txt) lines)"
+          else
+            echo "⚠️ No YT_COOKIES secret. Download may fail."
+          fi
+
       - name: Get video title
         id: title
         run: |
           URL="${{ github.event.inputs.video_url }}"
-
-          TITLE=$(yt-dlp --cookies-from-browser firefox --get-title "$URL" 2>/dev/null)
+          
+          # Command with cookies (if exists)
+          if [ -f cookies.txt ]; then
+            TITLE=$(yt-dlp --cookies cookies.txt --js-runtimes deno --extractor-args youtube:player_client=android --get-title "$URL" 2>/dev/null)
+          else
+            TITLE=""
+          fi
+          
           if [ -z "$TITLE" ]; then
             echo "⚠️ Could not fetch title, using fallback"
-            TITLE="youtube_video_$(date +%s)"
+            TITLE="youtube_video_$(date +%Y%m%d_%H%M%S)"
           fi
-
+          
           SAFE_TITLE=$(echo "$TITLE" | sed 's/[\\/:*?"<>|]/_/g' | tr -d '\n' | head -c 200)
           echo "safe_title=$SAFE_TITLE" >> $GITHUB_OUTPUT
           echo "raw_title=$TITLE" >> $GITHUB_OUTPUT
@@ -75,11 +88,7 @@ jobs:
       - name: Prepare format selector
         id: format
         run: |
-          QUALITY="${{ github.event.inputs.quality }}"
-          case "$QUALITY" in
-            "best")
-              echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT
-              ;;
+          case "${{ github.event.inputs.quality }}" in
             "2160p (4K)")
               echo "format=bestvideo[height<=2160]+bestaudio/best" >> $GITHUB_OUTPUT
               ;;
@@ -98,7 +107,7 @@ jobs:
             "360p")
               echo "format=bestvideo[height<=360]+bestaudio/best" >> $GITHUB_OUTPUT
               ;;
-            "audio only (mp3)")
+            "Audio Only (MP3)")
               echo "format=bestaudio" >> $GITHUB_OUTPUT
               echo "audio=true" >> $GITHUB_OUTPUT
               ;;
@@ -106,7 +115,7 @@ jobs:
               echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT
           esac
 
-      - name: Download video_audio
+      - name: Download video/audio
         run: |
           mkdir -p ${{ env.OUTPUT_DIR }}
           cd ${{ env.OUTPUT_DIR }}
@@ -114,15 +123,20 @@ jobs:
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
           SAFE_TITLE="${{ steps.title.outputs.safe_title }}"
-
-          COMMON_OPTS="--js-runtimes deno --cookies-from-browser firefox --extractor-args youtube:player_client=android --no-mtime --ignore-errors --retries 5 --fragment-retries 5 --sleep-interval 3 --max-sleep-interval 6 --limit-rate 2M --add-metadata --embed-thumbnail --embed-chapters --output \"$SAFE_TITLE.%(ext)s\""
-
+          
+          # Base options
+          YT_OPTS="--js-runtimes deno --extractor-args youtube:player_client=android --no-mtime --ignore-errors --retries 5 --fragment-retries 5 --sleep-interval 3 --max-sleep-interval 6 --limit-rate 2M --add-metadata --embed-thumbnail --embed-chapters --output \"$SAFE_TITLE.%(ext)s\""
+          
+          if [ -f ../cookies.txt ]; then
+            YT_OPTS="$YT_OPTS --cookies ../cookies.txt"
+          fi
+          
           if [ "$IS_AUDIO" = "true" ]; then
             echo "🎵 Downloading audio only (MP3)..."
-            yt-dlp $COMMON_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
+            yt-dlp $YT_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
           else
             echo "🎬 Downloading video..."
-            yt-dlp $COMMON_OPTS -f "$FORMAT" --merge-output-format mp4 "$URL"
+            yt-dlp $YT_OPTS -f "$FORMAT" --merge-output-format mp4 "$URL"
           fi
 
       - name: Commit and push
