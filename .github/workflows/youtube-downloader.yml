@@ -1,32 +1,31 @@
-name: YouTube Video Downloader
+name: YouTube Ultimate Downloader (Full Quality + All Metadata)
 
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'YouTube video URL'
+        description: 'YouTube Video URL'
         required: true
         type: string
       quality:
-        description: 'Video quality'
+        description: 'Video Quality'
         required: false
-        default: 'best'
+        default: '1080p (FHD)'
         type: choice
         options:
-          - best
           - 2160p (4K)
           - 1440p (2K)
           - 1080p (FHD)
           - 720p (HD)
           - 480p (SD)
           - 360p
-          - audio only (mp3)
+          - Audio Only (MP3)
 
 env:
   OUTPUT_DIR: youtube
 
 jobs:
-  download-youtube:
+  download:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -38,81 +37,142 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Setup yt-dlp
-        uses: AnimMouse/setup-yt-dlp@v3
-
-      - name: Install FFmpeg (if not installed)
+      - name: Install Python and Pip
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y python3 python3-pip ffmpeg
+          python3 -m pip install --upgrade pip
+
+      - name: Install yt-dlp with all extras
+        run: |
+          python3 -m pip install "yt-dlp[default,curl-cffi]"
+          yt-dlp --version
+
+      - name: Prepare cookies from GitHub Secret
+        run: |
+          if [ -n "${{ secrets.YT_COOKIES }}" ]; then
+            echo "${{ secrets.YT_COOKIES }}" > cookies.txt
+            echo "✅ Cookies file created from secret"
+          else
+            echo "⚠️ No cookies secret found, continuing without authentication"
+          fi
 
       - name: Prepare format selector
         id: format
         run: |
           QUALITY="${{ github.event.inputs.quality }}"
           case "$QUALITY" in
-            "best")
-              echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT
-              ;;
             "2160p (4K)")
-              echo "format=bestvideo[height<=2160]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]" >> $GITHUB_OUTPUT
+              echo "merge=mp4" >> $GITHUB_OUTPUT
               ;;
             "1440p (2K)")
-              echo "format=bestvideo[height<=1440]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT
+              echo "merge=mp4" >> $GITHUB_OUTPUT
               ;;
             "1080p (FHD)")
-              echo "format=bestvideo[height<=1080]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT
+              echo "merge=mp4" >> $GITHUB_OUTPUT
               ;;
             "720p (HD)")
-              echo "format=bestvideo[height<=720]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT
+              echo "merge=mp4" >> $GITHUB_OUTPUT
               ;;
             "480p (SD)")
-              echo "format=bestvideo[height<=480]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT
+              echo "merge=mp4" >> $GITHUB_OUTPUT
               ;;
             "360p")
-              echo "format=bestvideo[height<=360]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]" >> $GITHUB_OUTPUT
+              echo "merge=mp4" >> $GITHUB_OUTPUT
               ;;
-            "audio only (mp3)")
+            "Audio Only (MP3)")
               echo "format=bestaudio" >> $GITHUB_OUTPUT
-              echo "extract_audio=true" >> $GITHUB_OUTPUT
-              ;;
-            *)
-              echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "audio=true" >> $GITHUB_OUTPUT
+              echo "merge=mp3" >> $GITHUB_OUTPUT
               ;;
           esac
 
       - name: Create output directory
         run: mkdir -p ${{ env.OUTPUT_DIR }}
 
-      - name: Download video
+      - name: Extract video title
+        id: title
+        run: |
+          if [ -f cookies.txt ]; then
+            TITLE=$(yt-dlp --cookies cookies.txt --get-title "${{ github.event.inputs.video_url }}" 2>/dev/null || yt-dlp --get-title "${{ github.event.inputs.video_url }}")
+          else
+            TITLE=$(yt-dlp --get-title "${{ github.event.inputs.video_url }}")
+          fi
+          SAFE_TITLE=$(echo "$TITLE" | sed 's/[\\/:*?"<>|]/_/g' | tr -d '\n')
+          echo "safe_title=$SAFE_TITLE" >> $GITHUB_OUTPUT
+          echo "raw_title=$TITLE" >> $GITHUB_OUTPUT
+
+      - name: Download and process video
         run: |
           cd ${{ env.OUTPUT_DIR }}
           URL="${{ github.event.inputs.video_url }}"
           FORMAT="${{ steps.format.outputs.format }}"
-          EXTRACT_AUDIO="${{ steps.format.outputs.extract_audio }}"
-          
-          if [ "$EXTRACT_AUDIO" = "true" ]; then
-            yt-dlp -f "$FORMAT" \
-                   --extract-audio \
-                   --audio-format mp3 \
-                   --audio-quality 0 \
-                   --embed-thumbnail \
-                   --add-metadata \
-                   --output "%(title)s.%(ext)s" \
-                   "$URL"
-          else
-            yt-dlp -f "$FORMAT" \
-                   --merge-output-format mp4 \
-                   --embed-thumbnail \
-                   --add-metadata \
-                   --output "%(title)s.%(ext)s" \
-                   "$URL"
+          IS_AUDIO="${{ steps.format.outputs.audio }}"
+          SAFE_TITLE="${{ steps.title.outputs.safe_title }}"
+
+          YTDL_OPTS=(
+            --no-mtime
+            --ignore-errors
+            --no-overwrites
+            --retries 10
+            --fragment-retries 10
+            --sleep-interval 5
+            --max-sleep-interval 10
+            --add-metadata
+            --xattrs
+            --embed-thumbnail
+            --embed-chapters
+          )
+
+          # اضافه کردن کوکی در صورت وجود
+          if [ -f ../cookies.txt ]; then
+            YTDL_OPTS+=(--cookies ../cookies.txt)
           fi
 
-      - name: Commit and push video
+          # اضافه کردن impersonation
+          YTDL_OPTS+=(--impersonate chrome)
+
+          if [ "$IS_AUDIO" = "true" ]; then
+            # دانلود و تبدیل به MP3
+            yt-dlp "${YTDL_OPTS[@]}" \
+              -f "$FORMAT" \
+              --extract-audio \
+              --audio-format mp3 \
+              --audio-quality 0 \
+              --output "$SAFE_TITLE.%(ext)s" \
+              "$URL"
+          else
+            # دانلود ویدیو + صدا و ادغام با کیفیت نهایی + متادیتا
+            yt-dlp "${YTDL_OPTS[@]}" \
+              -f "$FORMAT" \
+              --merge-output-format mp4 \
+              --output "$SAFE_TITLE.%(ext)s" \
+              "$URL"
+          fi
+
+      - name: Create metadata JSON (optional)
+        run: |
+          cd ${{ env.OUTPUT_DIR }}
+          URL="${{ github.event.inputs.video_url }}"
+          SAFE_TITLE="${{ steps.title.outputs.safe_title }}"
+          
+          # دریافت اطلاعات کامل برای JSON
+          if [ -f ../cookies.txt ]; then
+            yt-dlp --cookies ../cookies.txt --write-info-json --output "$SAFE_TITLE.%(ext)s" --skip-download "$URL" 2>/dev/null || true
+          else
+            yt-dlp --write-info-json --output "$SAFE_TITLE.%(ext)s" --skip-download "$URL" 2>/dev/null || true
+          fi
+
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ env.OUTPUT_DIR }}
-          git diff --cached --quiet || git commit -m "Add YouTube video: ${{ github.event.inputs.video_url }}"
+          git diff --cached --quiet || git commit -m "Add YouTube: ${{ steps.title.outputs.raw_title }} (${{ github.event.inputs.quality }})"
           git push
