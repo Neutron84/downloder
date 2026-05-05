@@ -1,4 +1,4 @@
-name: Crawl Dynamic Website with Depth and Scroll
+name: Crawl Dynamic Website with Depth and Scroll (Final)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       crawl_depth:
-        description: 'Crawl depth (1 = only start page, 2 = start + linked pages, etc.)'
+        description: 'Crawl depth (0 = only start page, 1 = start + linked pages, etc.)'
         required: false
         default: '1'
         type: string
@@ -100,13 +100,24 @@ jobs:
             }).filter(u => u);
           }
 
-          // Helper: remove query string and fragment for matching
+          // Helper: remove query string and fragment for matching assets (resources)
           function normalizeUrlForMatch(url) {
             try {
               const u = new URL(url);
               return u.origin + u.pathname;
             } catch (e) {
               return url.split('?')[0].split('#')[0];
+            }
+          }
+
+          // Helper: remove only fragment for visited pages (to avoid duplicate entries)
+          function normalizeUrlForVisited(url) {
+            try {
+              const u = new URL(url);
+              u.hash = '';
+              return u.href;
+            } catch (e) {
+              return url.split('#')[0];
             }
           }
 
@@ -141,20 +152,18 @@ jobs:
             });
 
             const resourceMap = new Map(); // normalizedUrl -> {body, contentType, originalUrl}
-            const visited = new Set();
+            const visited = new Set();      // stores normalized visited URLs (without fragment)
             const queue = [{ url: startUrl, depth: 0 }];
-            const pageMap = new Map(); // finalUrl -> localHtmlFile
+            const pageMap = new Map();      // final normalized URL -> local html file name
+            let firstPageLocalFile = null;  // for index.html redirect
 
             async function processPage(pageUrl, currentDepth) {
               const page = await browser.newPage();
-              // Set user-agent and viewport to look more like a real browser
               await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
               await page.setViewport({ width: 1280, height: 800 });
 
-              // Array to hold pending buffer promises for this page
               let pendingResources = [];
 
-              // Intercept requests only if needed (we just need responses)
               await page.setRequestInterception(true);
               page.on('request', req => req.continue());
 
@@ -163,8 +172,8 @@ jobs:
                 const contentType = response.headers()['content-type'] || '';
                 const ext = path.extname(new URL(respUrl).pathname).toLowerCase();
                 const isHtml = contentType.includes('text/html') || ext === '.html' || ext === '.htm';
-                // Skip redirect responses (status 3xx) because buffer() fails
-                if (!isHtml && response.status() < 300 || response.status() >= 400) {
+                // skip redirects (3xx) because buffer() will fail
+                if (!isHtml && (response.status() < 300 || response.status() >= 400)) {
                   const normalized = normalizeUrlForMatch(respUrl);
                   const bufferPromise = response.buffer().catch(err => {
                     console.warn(`Buffer error for ${respUrl}: ${err.message}`);
@@ -209,16 +218,16 @@ jobs:
                 }
               }
 
-              // Navigate and get final URL after redirects
               await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-              const finalUrl = page.url();
+              const finalUrlRaw = page.url();
+              const finalUrl = normalizeUrlForVisited(finalUrlRaw);
 
               if (visited.has(finalUrl)) {
                 await page.close();
                 return null;
               }
               visited.add(finalUrl);
-              console.log(`[${currentDepth}] Processing: ${finalUrl}`);
+              console.log(`[Depth ${currentDepth}] Processing: ${finalUrl}`);
 
               if (waitSelector) {
                 await page.waitForSelector(waitSelector, { timeout: 10000 }).catch(() => {});
@@ -238,12 +247,11 @@ jobs:
                 previousHeight = newHeight;
               }
 
-              // Wait for network idle and then all pending buffers
               await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
               await Promise.all(pendingResources);
               pendingResources = [];
 
-              // Extract additional CSS URLs from inline and external stylesheets
+              // Extract CSS URLs from stylesheets
               const cssUrls = await page.evaluate(() => {
                 const urls = new Set();
                 document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
@@ -264,20 +272,18 @@ jobs:
                 return Array.from(urls);
               });
 
-              // Fetch missing CSS resources by creating temporary fetch requests
+              // Fetch missing CSS resources
               for (const cssUrl of cssUrls) {
                 try {
-                  const absolute = new URL(cssUrl, finalUrl).href;
+                  const absolute = new URL(cssUrl, finalUrlRaw).href;
                   const normalized = normalizeUrlForMatch(absolute);
                   if (!resourceMap.has(normalized)) {
-                    // Use fetch to trigger network request and capture via response handler
                     await page.evaluate(async (url) => {
                       await fetch(url, { mode: 'no-cors' });
                     }, absolute).catch(() => {});
                   }
                 } catch(e) {}
               }
-              // Wait a bit for those fetch responses to be captured
               await new Promise(r => setTimeout(r, 1000));
               await Promise.all(pendingResources);
               pendingResources = [];
@@ -304,8 +310,16 @@ jobs:
               const { url: currentUrl, depth } = queue[idx];
               idx++;
               if (depth > maxDepth) continue;
+
+              // Normalize the current URL before processing to avoid duplicates
+              const normalizedCurrent = normalizeUrlForVisited(currentUrl);
+              if (visited.has(normalizedCurrent)) continue;
+
               const result = await processPage(currentUrl, depth);
               if (result) {
+                if (!firstPageLocalFile) {
+                  firstPageLocalFile = result.localFileName;
+                }
                 pagesData.push({
                   url: result.finalUrl,
                   html: result.html,
@@ -318,8 +332,11 @@ jobs:
                   for (const link of result.links) {
                     try {
                       const linkUrl = new URL(link);
-                      if (linkUrl.hostname === baseDomain && !visited.has(linkUrl.href) && !queue.some(item => item.url === linkUrl.href)) {
-                        queue.push({ url: linkUrl.href, depth: depth + 1 });
+                      if (linkUrl.hostname === baseDomain) {
+                        const normalizedLink = normalizeUrlForVisited(linkUrl.href);
+                        if (!visited.has(normalizedLink) && !queue.some(item => normalizeUrlForVisited(item.url) === normalizedLink)) {
+                          queue.push({ url: linkUrl.href, depth: depth + 1 });
+                        }
                       }
                     } catch (e) {}
                   }
@@ -432,7 +449,8 @@ jobs:
                     let href = $(el).attr('href');
                     if (href) {
                       const absolute = resolveUrl(pageBase, href);
-                      if (absolute === targetUrl) {
+                      const normalizedTarget = normalizeUrlForVisited(absolute);
+                      if (normalizedTarget === targetUrl) {
                         $(el).attr('href', targetLocalFile);
                       }
                     }
@@ -445,9 +463,11 @@ jobs:
               await fs.writeFile(htmlFilePath, updatedHtml);
             }
 
-            const startLocalFile = pageMap.get(startUrl);
-            if (startLocalFile) {
-              await fs.writeFile(path.join(tempDir, 'index.html'), `<meta http-equiv="refresh" content="0; url=${startLocalFile}">`);
+            // Create index.html that redirects to the first crawled page (final URL after redirects)
+            if (firstPageLocalFile) {
+              await fs.writeFile(path.join(tempDir, 'index.html'), `<meta http-equiv="refresh" content="0; url=${firstPageLocalFile}">`);
+            } else {
+              console.warn('No first page file found, index.html not created');
             }
 
             const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
