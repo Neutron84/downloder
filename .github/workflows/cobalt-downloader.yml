@@ -1,0 +1,186 @@
+name: Cobalt API YouTube Downloader (No yt-dlp)
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      quality:
+        description: 'Video quality'
+        required: false
+        default: '1080p'
+        type: choice
+        options:
+          - max
+          - 4320p (8K)
+          - 2160p (4K)
+          - 1440p (2K)
+          - 1080p (FHD)
+          - 720p (HD)
+          - 480p (SD)
+          - 360p
+          - 240p
+          - 144p
+          - Audio Only
+      audio_format:
+        description: 'Audio format (when Audio Only selected)'
+        required: false
+        default: 'mp3'
+        type: choice
+        options:
+          - mp3
+          - ogg
+          - wav
+          - opus
+          - best
+      api_url:
+        description: 'Cobalt API URL (use your self-hosted instance for best stability)'
+        required: false
+        default: 'https://api.cobalt.tools'
+        type: string
+      api_key:
+        description: 'API Key (if your instance requires it)'
+        required: false
+        type: string
+      bearer_token:
+        description: 'Bearer Token (if your instance requires it)'
+        required: false
+        type: string
+
+env:
+  OUTPUT_DIR: downloads
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq curl
+
+      - name: Prepare quality parameters
+        id: quality
+        run: |
+          QUALITY_INPUT="${{ github.event.inputs.quality }}"
+          if [[ "$QUALITY_INPUT" == "Audio Only" ]]; then
+            echo "is_audio=true" >> $GITHUB_OUTPUT
+            echo "video_quality=1080" >> $GITHUB_OUTPUT
+          else
+            echo "is_audio=false" >> $GITHUB_OUTPUT
+            QUALITY_VAL=$(echo "$QUALITY_INPUT" | sed -E 's/p.*//; s/.* //')
+            echo "video_quality=$QUALITY_VAL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare audio format
+        id: audio
+        run: |
+          AUDIO_FMT="${{ github.event.inputs.audio_format }}"
+          if [[ -z "$AUDIO_FMT" ]]; then
+            echo "audio_format=mp3" >> $GITHUB_OUTPUT
+          else
+            echo "audio_format=$AUDIO_FMT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare API authentication
+        id: auth
+        run: |
+          API_KEY="${{ github.event.inputs.api_key }}"
+          BEARER_TOKEN="${{ github.event.inputs.bearer_token }}"
+          AUTH_HEADER=""
+          if [[ -n "$API_KEY" ]]; then
+            AUTH_HEADER="Authorization: Api-Key $API_KEY"
+          elif [[ -n "$BEARER_TOKEN" ]]; then
+            AUTH_HEADER="Authorization: Bearer $BEARER_TOKEN"
+          fi
+          echo "auth_header=$AUTH_HEADER" >> $GITHUB_OUTPUT
+
+      - name: Build API request payload
+        id: payload
+        run: |
+          IS_AUDIO="${{ steps.quality.outputs.is_audio }}"
+          VIDEO_QUALITY="${{ steps.quality.outputs.video_quality }}"
+          AUDIO_FORMAT="${{ steps.audio.outputs.audio_format }}"
+
+          if [[ "$IS_AUDIO" == "true" ]]; then
+            PAYLOAD=$(jq -n \
+              --arg url "${{ github.event.inputs.video_url }}" \
+              --arg audioFormat "$AUDIO_FORMAT" \
+              '{url: $url, downloadMode: "audio", audioFormat: $audioFormat}')
+          else
+            PAYLOAD=$(jq -n \
+              --arg url "${{ github.event.inputs.video_url }}" \
+              --arg videoQuality "$VIDEO_QUALITY" \
+              '{url: $url, videoQuality: $videoQuality}')
+          fi
+          echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
+
+      - name: Call Cobalt API
+        id: api
+        run: |
+          API_URL="${{ github.event.inputs.api_url }}"
+          PAYLOAD='${{ steps.payload.outputs.payload }}'
+          AUTH_HEADER='${{ steps.auth.outputs.auth_header }}'
+
+          RESPONSE=$(curl -s -X POST "$API_URL/api/json" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            ${AUTH_HEADER:+ -H "$AUTH_HEADER"} \
+            -d "$PAYLOAD")
+
+          echo "API Response: $RESPONSE"
+
+          STATUS=$(echo "$RESPONSE" | jq -r '.status')
+          if [[ "$STATUS" == "error" ]]; then
+            ERROR_CODE=$(echo "$RESPONSE" | jq -r '.error.code')
+            echo "::error::Cobalt API error: $ERROR_CODE"
+            exit 1
+          fi
+
+          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.url')
+          FILENAME=$(echo "$RESPONSE" | jq -r '.filename')
+
+          if [[ -z "$DOWNLOAD_URL" || "$DOWNLOAD_URL" == "null" ]]; then
+            echo "::error::No download URL in response"
+            exit 1
+          fi
+
+          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+
+      - name: Download file
+        run: |
+          mkdir -p ${{ env.OUTPUT_DIR }}
+          cd ${{ env.OUTPUT_DIR }}
+          DOWNLOAD_URL="${{ steps.api.outputs.download_url }}"
+          FILENAME="${{ steps.api.outputs.filename }}"
+
+          # Sanitize filename
+          SAFE_FILENAME=$(echo "$FILENAME" | sed 's/[\\/:*?"<>|]/_/g')
+          echo "Downloading to: $SAFE_FILENAME"
+
+          curl -L -o "$SAFE_FILENAME" "$DOWNLOAD_URL"
+
+          if [[ ! -f "$SAFE_FILENAME" ]]; then
+            echo "::error::Download failed - file not created"
+            exit 1
+          fi
+          echo "Download complete: $(ls -lh "$SAFE_FILENAME")"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.OUTPUT_DIR }}
+          git diff --cached --quiet || git commit -m "Add: download via Cobalt API"
+          git push
