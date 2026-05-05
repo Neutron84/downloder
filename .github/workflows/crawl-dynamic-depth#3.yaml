@@ -65,7 +65,6 @@ jobs:
           npm install puppeteer cheerio
           sudo apt-get update
           sudo apt-get install -y chromium
-          # Create symlink for Puppeteer to find Chromium
           sudo ln -sf /usr/bin/chromium /usr/bin/chromium-browser
 
       - name: Create output directory
@@ -111,6 +110,15 @@ jobs:
             }
           }
 
+          // Helper: resolve relative URL
+          function resolveUrl(base, relative) {
+            try {
+              return new URL(relative, base).href;
+            } catch (e) {
+              return relative;
+            }
+          }
+
           (async () => {
             const startUrl = process.env.TARGET_URL;
             const maxDepth = parseInt(process.env.CRAWL_DEPTH, 10) || 1;
@@ -123,65 +131,56 @@ jobs:
             const browser = await puppeteer.launch({
               headless: true,
               executablePath: '/usr/bin/chromium',
-              args: ['--no-sandbox', '--disable-setuid-sandbox']
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu'
+              ]
             });
 
             const resourceMap = new Map(); // normalizedUrl -> {body, contentType, originalUrl}
-            let activeRequests = 0;
-            let resolveIdle = null;
-            let idlePromise = Promise.resolve();
-
-            function startRequest() {
-              activeRequests++;
-            }
-            function finishRequest() {
-              activeRequests--;
-              if (activeRequests === 0 && resolveIdle) {
-                resolveIdle();
-                resolveIdle = null;
-              }
-            }
-            async function waitForAllRequests() {
-              if (activeRequests === 0) return;
-              return new Promise(resolve => {
-                resolveIdle = resolve;
-              });
-            }
-
             const visited = new Set();
             const queue = [{ url: startUrl, depth: 0 }];
             const pageMap = new Map(); // finalUrl -> localHtmlFile
 
             async function processPage(pageUrl, currentDepth) {
               const page = await browser.newPage();
+              // Set user-agent and viewport to look more like a real browser
+              await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+              await page.setViewport({ width: 1280, height: 800 });
+
+              // Array to hold pending buffer promises for this page
+              let pendingResources = [];
+
+              // Intercept requests only if needed (we just need responses)
               await page.setRequestInterception(true);
-              page.on('request', req => {
-                startRequest();
-                req.continue();
-              });
-              page.on('requestfailed', () => finishRequest());
+              page.on('request', req => req.continue());
+
               page.on('response', async response => {
                 const respUrl = response.url();
                 const contentType = response.headers()['content-type'] || '';
                 const ext = path.extname(new URL(respUrl).pathname).toLowerCase();
                 const isHtml = contentType.includes('text/html') || ext === '.html' || ext === '.htm';
-                if (!isHtml) {
+                // Skip redirect responses (status 3xx) because buffer() fails
+                if (!isHtml && response.status() < 300 || response.status() >= 400) {
                   const normalized = normalizeUrlForMatch(respUrl);
-                  captureResource(normalized, contentType, response.buffer(), respUrl);
+                  const bufferPromise = response.buffer().catch(err => {
+                    console.warn(`Buffer error for ${respUrl}: ${err.message}`);
+                    return null;
+                  });
+                  const p = bufferPromise.then(buffer => {
+                    if (buffer && !resourceMap.has(normalized)) {
+                      resourceMap.set(normalized, { body: buffer, contentType, originalUrl: respUrl });
+                    }
+                    return true;
+                  }).catch(err => console.warn(`Failed to capture ${respUrl}: ${err.message}`));
+                  pendingResources.push(p);
                 }
-                finishRequest();
               });
 
-              function captureResource(normalizedUrl, contentType, bufferPromise, originalUrl) {
-                const p = bufferPromise.then(buffer => {
-                  if (!resourceMap.has(normalizedUrl)) {
-                    resourceMap.set(normalizedUrl, { body: buffer, contentType, originalUrl });
-                  }
-                  return true;
-                }).catch(err => console.warn(`Failed to capture ${normalizedUrl}: ${err.message}`));
-                // No need to store in pending array; we wait via activeRequests counter
-              }
-
+              // Set cookies if provided
               if (cookiesFilePath && cookiesFilePath.trim() !== '') {
                 try {
                   const cookiesContent = await fs.readFile(cookiesFilePath, 'utf8');
@@ -210,6 +209,7 @@ jobs:
                 }
               }
 
+              // Navigate and get final URL after redirects
               await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: 60000 });
               const finalUrl = page.url();
 
@@ -224,6 +224,7 @@ jobs:
                 await page.waitForSelector(waitSelector, { timeout: 10000 }).catch(() => {});
               }
 
+              // Scroll handling
               let previousHeight = await page.evaluate('document.body.scrollHeight');
               for (let i = 0; i < scrollLimit; i++) {
                 await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
@@ -237,17 +238,17 @@ jobs:
                 previousHeight = newHeight;
               }
 
+              // Wait for network idle and then all pending buffers
               await page.waitForNetworkIdle({ idleTime: 2000, timeout: 15000 }).catch(() => {});
-              await waitForAllRequests();
+              await Promise.all(pendingResources);
+              pendingResources = [];
 
-              // Extract all CSS URLs from inline and external stylesheets
+              // Extract additional CSS URLs from inline and external stylesheets
               const cssUrls = await page.evaluate(() => {
                 const urls = new Set();
-                // External stylesheets
                 document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
                   if (link.href) urls.add(link.href);
                 });
-                // Inline stylesheets content (search for url(...))
                 document.querySelectorAll('style').forEach(style => {
                   const text = style.textContent;
                   if (text) {
@@ -263,21 +264,23 @@ jobs:
                 return Array.from(urls);
               });
 
-              // Capture those CSS URLs by creating temporary image elements to trigger network requests
+              // Fetch missing CSS resources by creating temporary fetch requests
               for (const cssUrl of cssUrls) {
                 try {
-                  // Resolve relative URL
                   const absolute = new URL(cssUrl, finalUrl).href;
                   const normalized = normalizeUrlForMatch(absolute);
                   if (!resourceMap.has(normalized)) {
-                    // Trigger a fetch via page.evaluate to force network request
+                    // Use fetch to trigger network request and capture via response handler
                     await page.evaluate(async (url) => {
                       await fetch(url, { mode: 'no-cors' });
                     }, absolute).catch(() => {});
                   }
                 } catch(e) {}
               }
-              await waitForAllRequests();
+              // Wait a bit for those fetch responses to be captured
+              await new Promise(r => setTimeout(r, 1000));
+              await Promise.all(pendingResources);
+              pendingResources = [];
 
               const html = await page.content();
               const links = await page.evaluate(() => {
@@ -324,6 +327,7 @@ jobs:
               }
             }
 
+            // Create temporary directory and save assets
             const tempDir = path.join(outDir, 'temp_crawl_' + Date.now());
             const assetsDir = path.join(tempDir, 'assets');
             await fs.mkdir(assetsDir, { recursive: true });
@@ -358,19 +362,11 @@ jobs:
               urlToAssetPath.set(normUrl, assetRelPath);
             }
 
-            function resolveUrl(base, relative) {
-              try {
-                return new URL(relative, base).href;
-              } catch (e) {
-                return relative;
-              }
-            }
-
+            // Rewrite HTML files
             for (const pageInfo of pagesData) {
               const $ = cheerio.load(pageInfo.html);
               const pageBase = pageInfo.url;
 
-              // Process simple attributes
               const attributesToCheck = [
                 { selector: 'img', attr: 'src' },
                 { selector: 'img', attr: 'srcset', isSrcset: true },
