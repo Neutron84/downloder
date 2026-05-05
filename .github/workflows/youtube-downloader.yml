@@ -1,4 +1,4 @@
-name: YouTube Downloader (Ultimate Fix)
+name: YouTube Persian Ultra Fix (No Login Required)
 
 on:
   workflow_dispatch:
@@ -38,129 +38,90 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install yt-dlp and dependencies
+      - name: Persian Dependency Fix - Install yt-dlp & FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           python3 -m pip install --upgrade pip
-          python3 -m pip install "yt-dlp[default]"
+          pip install "yt-dlp[default]"
 
-      - name: Setup Chrome and get cookies
-        id: cookies
+      - name: Persian Core Fix - Bypass Botguard (PO Token Injection)
         run: |
-          # Install Google Chrome
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable xvfb
-          
-          # Create virtual display for Chrome headless
-          Xvfb :99 -screen 0 1280x1024x24 &
-          export DISPLAY=:99
-          
-          # Run Chrome and navigate to YouTube, then export cookies
-          google-chrome-stable --no-sandbox --disable-dev-shm-usage --headless --disable-gpu --remote-debugging-port=9222 https://www.youtube.com &
-          sleep 5
-          
-          # Use yt-dlp to extract cookies from Chrome
-          mkdir -p ~/.config/google-chrome
-          python3 -c "
-          from selenium import webdriver
-          from selenium.webdriver.chrome.options import Options
-          import pickle
-          
-          chrome_options = Options()
-          chrome_options.add_argument('--no-sandbox')
-          chrome_options.add_argument('--disable-dev-shm-usage')
-          chrome_options.add_argument('--headless')
-          chrome_options.add_argument('--disable-gpu')
-          chrome_options.add_argument('user-data-dir=/tmp/chrome-profile')
-          
-          driver = webdriver.Chrome(options=chrome_options)
-          driver.get('https://www.youtube.com')
-          # Wait for user to log in manually if needed (this is automated)
-          import time
-          time.sleep(10)
-          pickle.dump(driver.get_cookies(), open('cookies.pkl', 'wb'))
-          driver.quit()
-          "
-          
-          # Convert cookies to Netscape format for yt-dlp
-          python3 -c "
-          import pickle
-          cookies = pickle.load(open('cookies.pkl', 'rb'))
-          with open('cookies.txt', 'w') as f:
-              f.write('# Netscape HTTP Cookie File\n')
-              for cookie in cookies:
-                  f.write(f\"{cookie['domain']}\tTRUE\t{cookie['path']}\t{str(cookie.get('httpOnly', False)).upper()}\t{cookie.get('expiry', 0)}\t{cookie['name']}\t{cookie['value']}\n\")
-          "
+          python3 -m pip install bgutil-ytdlp-pot-provider
+          cd /tmp
+          git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
+          cd bgutil-ytdlp-pot-provider/server
+          npm install
+          npx tsc
+          node dist/index.js --port 4416 --detach &
+          cd $GITHUB_WORKSPACE
+          echo "::group::Persian Fix: PO Token Server Started"
+          ps aux | grep node
+          echo "::endgroup::"
 
-      - name: Get video title with cookies
-        id: title
-        run: |
-          URL="${{ github.event.inputs.video_url }}"
-          TITLE=$(yt-dlp --cookies cookies.txt --extractor-args "youtube:player_client=android" --get-title "$URL" 2>/dev/null)
-          if [ -z "$TITLE" ]; then
-            echo "Fallback: Could not fetch title"
-            TITLE="youtube_video_$(date +%s)"
-          fi
-          SAFE_TITLE=$(echo "$TITLE" | sed 's/[\\/:*?"<>|]/_/g' | tr -d '\n' | head -c 200)
-          echo "safe_title=$SAFE_TITLE" >> $GITHUB_OUTPUT
-          echo "raw_title=$TITLE" >> $GITHUB_OUTPUT
-
-      - name: Prepare format selector
+      - name: Persian Format Selector
         id: format
         run: |
           case "${{ github.event.inputs.quality }}" in
             "2160p (4K)")
-              echo "format=bestvideo[height<=2160]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]" >> $GITHUB_OUTPUT
               ;;
             "1440p (2K)")
-              echo "format=bestvideo[height<=1440]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT
               ;;
             "1080p (FHD)")
-              echo "format=bestvideo[height<=1080]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT
               ;;
             "720p (HD)")
-              echo "format=bestvideo[height<=720]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT
               ;;
             "480p (SD)")
-              echo "format=bestvideo[height<=480]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT
               ;;
             "360p")
-              echo "format=bestvideo[height<=360]+bestaudio/best" >> $GITHUB_OUTPUT
+              echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]" >> $GITHUB_OUTPUT
               ;;
             "Audio Only (MP3)")
               echo "format=bestaudio" >> $GITHUB_OUTPUT
               echo "audio=true" >> $GITHUB_OUTPUT
               ;;
-            *)
-              echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT
           esac
 
-      - name: Download video/audio with cookies and PO Token
+      - name: Persian Download Engine (Ultimate)
         run: |
           mkdir -p ${{ env.OUTPUT_DIR }}
           cd ${{ env.OUTPUT_DIR }}
           URL="${{ github.event.inputs.video_url }}"
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
-          SAFE_TITLE="${{ steps.title.outputs.safe_title }}"
-          
-          YT_OPTS="--cookies ../cookies.txt --extractor-args \"youtube:player_client=android\" --no-mtime --ignore-errors --retries 10 --fragment-retries 10 --sleep-interval 5 --max-sleep-interval 10 --limit-rate 2M --add-metadata --embed-thumbnail --embed-chapters --output \"$SAFE_TITLE.%(ext)s\""
-          
+
+          # Persian Kernel Optimization
+          export YTDLP_POT_PROVIDER="http://localhost:4416"
+
+          YT_OPTS="--extractor-args \"youtube:player_client=android,web\" \
+                    --use-postprocessor \"GetPOT:provider=bgutil-ytdlp-pot-provider\" \
+                    --extractor-retries 5 \
+                    --fragment-retries 5 \
+                    --sleep-interval 2 \
+                    --max-sleep-interval 5 \
+                    --limit-rate 10M \
+                    --add-metadata \
+                    --embed-thumbnail \
+                    --embed-chapters \
+                    --output \"%(title)s.%(ext)s\""
+
           if [ "$IS_AUDIO" = "true" ]; then
-            echo "🎵 Downloading audio only (MP3)..."
+            echo "🎵 Persian Fix: Downloading high-quality Audio (MP3)..."
             yt-dlp $YT_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
           else
-            echo "🎬 Downloading video..."
+            echo "🎬 Persian Fix: Downloading Video..."
             yt-dlp $YT_OPTS -f "$FORMAT" --merge-output-format mp4 "$URL"
           fi
 
-      - name: Commit and push
+      - name: Commit & Push to Repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ env.OUTPUT_DIR }}
-          git diff --cached --quiet || git commit -m "Downloaded: ${{ steps.title.outputs.raw_title }}"
+          git diff --cached --quiet || git commit -m "Added: Persian Ultra Fix YouTube Video"
           git push
