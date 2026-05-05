@@ -1,0 +1,142 @@
+name: دانلودر ویدیوی یوتیوب با pytube
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'آدرس ویدیوی یوتیوب'
+        required: true
+        type: string
+      quality:
+        description: 'کیفیت ویدیو'
+        required: false
+        default: 'highest'
+        type: choice
+        options:
+          - 'highest'        # بهترین کیفیت ممکن (ویدیو+صدا)
+          - 'lowest'         # پایین‌ترین کیفیت ممکن
+          - 'audio_only'     # فقط صوت (mp4)
+          - '360p'
+
+env:
+  OUTPUT_DIR: pytube_downloads
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 30
+
+    steps:
+      - name: دریافت کد مخزن
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: نصب پایتون
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: نصب pytube (از مخزن اصلی)
+        run: |
+          python -m pip install --upgrade pip
+          pip install git+https://github.com/pytube/pytube.git
+          pip show pytube
+
+      - name: اجرای دانلودر pytube
+        run: |
+          python3 - <<EOF
+          import os
+          import sys
+          from pathlib import Path
+          import re
+
+          try:
+              from pytube import YouTube
+              from pytube.cli import on_progress
+              from pytube.exceptions import AgeRestrictedError, VideoUnavailable, PytubeError
+          except ImportError as e:
+              print(f"❌ خطا در وارد کردن pytube: {e}")
+              sys.exit(1)
+
+          # ---------- تنظیمات ----------
+          VIDEO_URL = "${{ github.event.inputs.video_url }}"
+          QUALITY = "${{ github.event.inputs.quality }}"
+          OUTPUT_PATH = Path("${{ env.OUTPUT_DIR }}")
+          OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+
+          print(f"🎬 شروع دانلود از: {VIDEO_URL}")
+          print(f"🔧 کیفیت درخواستی: {QUALITY}")
+          print(f"📁 پوشه خروجی: {OUTPUT_PATH.absolute()}")
+
+          try:
+              # ساخت شیء YouTube (بدون کوکی - برای ویدیوهای عمومی)
+              yt = YouTube(VIDEO_URL, on_progress_callback=on_progress)
+
+              # انتخاب استریم مناسب
+              selected_stream = None
+              if QUALITY == 'highest':
+                  selected_stream = yt.streams.get_highest_resolution()
+                  if not selected_stream:
+                      selected_stream = yt.streams.first()
+              elif QUALITY == 'lowest':
+                  selected_stream = yt.streams.get_lowest_resolution()
+                  if not selected_stream:
+                      selected_stream = yt.streams.first()
+              elif QUALITY == 'audio_only':
+                  selected_stream = yt.streams.get_audio_only()
+              elif QUALITY == '360p':
+                  selected_stream = yt.streams.filter(res="360p", progressive=True).first()
+                  if not selected_stream:
+                      selected_stream = yt.streams.filter(res="360p").first()
+
+              if selected_stream is None:
+                  print("❌ هیچ استریم مناسبی برای کیفیت انتخاب شده یافت نشد.")
+                  print("⚠️ استریم‌های موجود:")
+                  for stream in yt.streams:
+                      print(f"  - {stream}")
+                  sys.exit(1)
+
+              print(f"✅ در حال دانلود: {yt.title}")
+              print(f"🔊 استریم انتخاب شده: {selected_stream}")
+
+              # پاکسازی نام فایل
+              safe_title = re.sub(r'[<>:"/\\|?*]', '_', yt.title)
+              filename = f"{safe_title}.mp4"
+              if selected_stream.includes_audio_track == False and selected_stream.includes_video_track == True:
+                  filename = f"{safe_title}_video_only.mp4"
+
+              # دانلود فایل
+              downloaded_file = selected_stream.download(output_path=str(OUTPUT_PATH), filename=filename)
+              print(f"🎉 دانلود با موفقیت انجام شد: {downloaded_file}")
+
+          except AgeRestrictedError:
+              print("❌ خطا: ویدیو دارای محدودیت سنی است و بدون احراز هویت قابل دانلود نیست.")
+              print("🔧 برای ویدیوهای دارای محدودیت سنی باید از کوکی یا OAuth استفاده کنید.")
+              sys.exit(1)
+          except VideoUnavailable as e:
+              print(f"❌ خطا: ویدیو در دسترس نیست. جزئیات: {e}")
+              sys.exit(1)
+          except PytubeError as e:
+              print(f"❌ خطای اختصاصی pytube: {e}")
+              sys.exit(1)
+          except Exception as e:
+              print(f"❌ خطای پیش‌بینی نشده: {e}")
+              sys.exit(1)
+          EOF
+
+      - name: نمایش فایل‌های دانلود شده
+        run: |
+          echo "محتوای پوشه ${{ env.OUTPUT_DIR }}:"
+          ls -la ${{ env.OUTPUT_DIR }}
+
+      - name: متعهد کردن و ارسال فایل به مخزن
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.OUTPUT_DIR }}
+          git diff --cached --quiet || git commit -m "افزودن ویدیوی دانلود شده با pytube"
+          git push
