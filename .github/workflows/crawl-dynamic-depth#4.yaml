@@ -1,4 +1,4 @@
-name: Crawl Dynamic Website with Depth and Scroll (Final)
+name: Crawl Dynamic Website with Depth and Scroll
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       crawl_depth:
         description: 'Crawl depth (0 = only start page, 1 = start + linked pages, etc.)'
         required: false
-        default: '1'
+        default: '0'
         type: string
       scroll_limit:
         description: 'Number of scrolls per page (for infinite scroll)'
@@ -30,6 +30,7 @@ on:
       output_dir:
         description: 'Output directory (must end with /) e.g., output/'
         required: true
+        default: 'output/'
         type: string
       cookies_file:
         description: 'Path to cookies file (Netscape .txt or JSON) inside repo'
@@ -161,6 +162,8 @@ jobs:
               const page = await browser.newPage();
               await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
               await page.setViewport({ width: 1280, height: 800 });
+              // Set default navigation timeout to 2 minutes
+              await page.setDefaultNavigationTimeout(120000);
 
               let pendingResources = [];
 
@@ -218,8 +221,17 @@ jobs:
                 }
               }
 
-              await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-              const finalUrlRaw = page.url();
+              // Navigation with try-catch to handle timeouts gracefully
+              let finalUrlRaw;
+              try {
+                await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: 120000 });
+                finalUrlRaw = page.url();
+              } catch (navErr) {
+                console.warn(`Navigation failed for ${pageUrl}: ${navErr.message}. Skipping this page.`);
+                await page.close();
+                return null;
+              }
+
               const finalUrl = normalizeUrlForVisited(finalUrlRaw);
 
               if (visited.has(finalUrl)) {
@@ -463,11 +475,8 @@ jobs:
               await fs.writeFile(htmlFilePath, updatedHtml);
             }
 
-            // Create index.html that redirects to the first crawled page (final URL after redirects)
             if (firstPageLocalFile) {
               await fs.writeFile(path.join(tempDir, 'index.html'), `<meta http-equiv="refresh" content="0; url=${firstPageLocalFile}">`);
-            } else {
-              console.warn('No first page file found, index.html not created');
             }
 
             const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
