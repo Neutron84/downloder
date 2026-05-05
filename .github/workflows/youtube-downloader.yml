@@ -1,4 +1,4 @@
-name: YouTube Video Downloader (with Cookies)
+name: YouTube Downloader (Ultimate Fix)
 
 on:
   workflow_dispatch:
@@ -38,49 +38,72 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install Deno (JavaScript runtime for yt-dlp)
+      - name: Install yt-dlp and dependencies
         run: |
-          curl -fsSL https://deno.land/install.sh | sh
-          echo "$HOME/.deno/bin" >> $GITHUB_PATH
-
-      - name: Install yt-dlp via pip
-        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           python3 -m pip install --upgrade pip
           python3 -m pip install "yt-dlp[default]"
 
-      - name: Install static ffmpeg (fast)
+      - name: Setup Chrome and get cookies
+        id: cookies
         run: |
-          curl -L https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar xJ
-          sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/
-          sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/
-          ffmpeg -version | head -1
+          # Install Google Chrome
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable xvfb
+          
+          # Create virtual display for Chrome headless
+          Xvfb :99 -screen 0 1280x1024x24 &
+          export DISPLAY=:99
+          
+          # Run Chrome and navigate to YouTube, then export cookies
+          google-chrome-stable --no-sandbox --disable-dev-shm-usage --headless --disable-gpu --remote-debugging-port=9222 https://www.youtube.com &
+          sleep 5
+          
+          # Use yt-dlp to extract cookies from Chrome
+          mkdir -p ~/.config/google-chrome
+          python3 -c "
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          import pickle
+          
+          chrome_options = Options()
+          chrome_options.add_argument('--no-sandbox')
+          chrome_options.add_argument('--disable-dev-shm-usage')
+          chrome_options.add_argument('--headless')
+          chrome_options.add_argument('--disable-gpu')
+          chrome_options.add_argument('user-data-dir=/tmp/chrome-profile')
+          
+          driver = webdriver.Chrome(options=chrome_options)
+          driver.get('https://www.youtube.com')
+          # Wait for user to log in manually if needed (this is automated)
+          import time
+          time.sleep(10)
+          pickle.dump(driver.get_cookies(), open('cookies.pkl', 'wb'))
+          driver.quit()
+          "
+          
+          # Convert cookies to Netscape format for yt-dlp
+          python3 -c "
+          import pickle
+          cookies = pickle.load(open('cookies.pkl', 'rb'))
+          with open('cookies.txt', 'w') as f:
+              f.write('# Netscape HTTP Cookie File\n')
+              for cookie in cookies:
+                  f.write(f\"{cookie['domain']}\tTRUE\t{cookie['path']}\t{str(cookie.get('httpOnly', False)).upper()}\t{cookie.get('expiry', 0)}\t{cookie['name']}\t{cookie['value']}\n\")
+          "
 
-      - name: Save cookies from secret
-        run: |
-          if [ -n "${{ secrets.YT_COOKIES }}" ]; then
-            echo "${{ secrets.YT_COOKIES }}" > cookies.txt
-            echo "✅ Cookies file created ($(wc -l < cookies.txt) lines)"
-          else
-            echo "⚠️ No YT_COOKIES secret. Download may fail."
-          fi
-
-      - name: Get video title
+      - name: Get video title with cookies
         id: title
         run: |
           URL="${{ github.event.inputs.video_url }}"
-          
-          # Command with cookies (if exists)
-          if [ -f cookies.txt ]; then
-            TITLE=$(yt-dlp --cookies cookies.txt --js-runtimes deno --extractor-args youtube:player_client=android --get-title "$URL" 2>/dev/null)
-          else
-            TITLE=""
-          fi
-          
+          TITLE=$(yt-dlp --cookies cookies.txt --extractor-args "youtube:player_client=android" --get-title "$URL" 2>/dev/null)
           if [ -z "$TITLE" ]; then
-            echo "⚠️ Could not fetch title, using fallback"
-            TITLE="youtube_video_$(date +%Y%m%d_%H%M%S)"
+            echo "Fallback: Could not fetch title"
+            TITLE="youtube_video_$(date +%s)"
           fi
-          
           SAFE_TITLE=$(echo "$TITLE" | sed 's/[\\/:*?"<>|]/_/g' | tr -d '\n' | head -c 200)
           echo "safe_title=$SAFE_TITLE" >> $GITHUB_OUTPUT
           echo "raw_title=$TITLE" >> $GITHUB_OUTPUT
@@ -115,7 +138,7 @@ jobs:
               echo "format=bestvideo+bestaudio/best" >> $GITHUB_OUTPUT
           esac
 
-      - name: Download video/audio
+      - name: Download video/audio with cookies and PO Token
         run: |
           mkdir -p ${{ env.OUTPUT_DIR }}
           cd ${{ env.OUTPUT_DIR }}
@@ -124,12 +147,7 @@ jobs:
           IS_AUDIO="${{ steps.format.outputs.audio }}"
           SAFE_TITLE="${{ steps.title.outputs.safe_title }}"
           
-          # Base options
-          YT_OPTS="--js-runtimes deno --extractor-args youtube:player_client=android --no-mtime --ignore-errors --retries 5 --fragment-retries 5 --sleep-interval 3 --max-sleep-interval 6 --limit-rate 2M --add-metadata --embed-thumbnail --embed-chapters --output \"$SAFE_TITLE.%(ext)s\""
-          
-          if [ -f ../cookies.txt ]; then
-            YT_OPTS="$YT_OPTS --cookies ../cookies.txt"
-          fi
+          YT_OPTS="--cookies ../cookies.txt --extractor-args \"youtube:player_client=android\" --no-mtime --ignore-errors --retries 10 --fragment-retries 10 --sleep-interval 5 --max-sleep-interval 10 --limit-rate 2M --add-metadata --embed-thumbnail --embed-chapters --output \"$SAFE_TITLE.%(ext)s\""
           
           if [ "$IS_AUDIO" = "true" ]; then
             echo "🎵 Downloading audio only (MP3)..."
