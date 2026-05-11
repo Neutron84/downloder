@@ -1,4 +1,5 @@
-name: YouTube Downloader (No Cookies + js & PO Token support)
+name: Download with Cobalt API (without cookies and PO Token)
+
 
 on:
   workflow_dispatch:
@@ -8,21 +9,22 @@ on:
         required: true
         type: string
       quality:
-        description: 'Video quality'
+        description: 'Quality'
         required: false
-        default: '1080p (FHD)'
+        default: '1080p'
         type: choice
         options:
           - 2160p (4K)
           - 1440p (2K)
-          - 1080p (FHD)
-          - 720p (HD)
-          - 480p (SD)
+          - 1080p
+          - 720p
+          - 480p
           - 360p
-          - Audio Only (MP3)
+          - 144p
+          - Audio Only
 
 env:
-  OUTPUT_DIR: youtube_downloads
+  OUTPUT_DIR: Downloads
 
 jobs:
   download:
@@ -38,88 +40,59 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # Added: Install Docker (required to run the PO Token Provider)
-      - name: Set up Docker
-        uses: docker/setup-buildx-action@v3
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq curl
 
-      - name: Install yt-dlp, FFmpeg, and PO Token Provider
+      - name: Making a request for the Cobalt API
+        id: prepare
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          python3 -m pip install --upgrade pip
-          pip install yt-dlp
-          pip install bgutil-ytdlp-pot-provider
-
-
-      - name: Install and Run PO Token Provider
-        run: |
-          chmod +x ./install-provider.sh
-          ./install-provider.sh
-          curl --retry 5 --retry-delay 2 --fail --silent http://localhost:4416 || exit 1
-
-      - name: Set format based on quality
-        id: format
-        run: |
-          case "${{ github.event.inputs.quality }}" in
-            "2160p (4K)")
-              echo "format=bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]" >> $GITHUB_OUTPUT
-              ;;
-            "1440p (2K)")
-              echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT
-              ;;
-            "1080p (FHD)")
-              echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT
-              ;;
-            "720p (HD)")
-              echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT
-              ;;
-            "480p (SD)")
-              echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT
-              ;;
-            "360p")
-              echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]" >> $GITHUB_OUTPUT
-              ;;
-            "Audio Only (MP3)")
-              echo "format=bestaudio" >> $GITHUB_OUTPUT
-              echo "audio=true" >> $GITHUB_OUTPUT
-              ;;
-          esac
-
-      - name: Download video with yt-dlp
-        run: |
-          mkdir -p ${{ env.OUTPUT_DIR }}
-          cd ${{ env.OUTPUT_DIR }}
-          URL="${{ github.event.inputs.video_url }}"
-          FORMAT="${{ steps.format.outputs.format }}"
-          IS_AUDIO="${{ steps.format.outputs.audio }}"
-
-          COMMON_OPTS=(
-            --no-cookies
-            --no-cache-dir
-            --extractor-retries 10
-            --fragment-retries 10
-            --sleep-interval 5
-            --max-sleep-interval 5
-            --limit-rate 5M
-            --add-metadata
-            --embed-thumbnail
-            -S 'vcodec:h264,res,acodec:m4a'
-            --extractor-args 'youtube:player_client=android,web;include_live_dash;po_token_provider=bgutil:http://localhost:4416'
-            --output '%(title)s.%(ext)s'
-          )
-
-          if [ "$IS_AUDIO" = "true" ]; then
-            echo "🎵 Downloading audio (MP3)..."
-            yt-dlp "${COMMON_OPTS[@]}" -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
+          QUALITY="${{ github.event.inputs.quality }}"
+          if [[ "$QUALITY" == "Audio Only" ]]; then
+            PAYLOAD=$(jq -c -n \
+              --arg url "${{ github.event.inputs.video_url }}" \
+              '{url: $url, downloadMode: "audio", audioFormat: "mp3"}')
           else
-            echo "🎬 Downloading video..."
-            yt-dlp "${COMMON_OPTS[@]}" -f "$FORMAT" --merge-output-format mp4 "$URL"
+            # Extract the quality number (e.g. 1080 from "1080p")
+            QUALITY_NUM=$(echo "$QUALITY" | grep -oE '[0-9]+')
+            PAYLOAD=$(jq -c -n \
+              --arg url "${{ github.event.inputs.video_url }}" \
+              --arg vq "$QUALITY_NUM" \
+              '{url: $url, videoQuality: $vq}')
+          fi
+          echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
+
+      - name: Cobalt API call
+        id: api
+        run: |
+          RESPONSE=$(curl -s -X POST "https://api.cobalt.tools/api/json" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d '${{ steps.prepare.outputs.payload }}')
+          
+          echo "API response: $RESPONSE"
+          
+          STATUS=$(echo "$RESPONSE" | jq -r '.status')
+          if [[ "$STATUS" == "error" ]]; then
+            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error')
+            echo "::error::Error from Cobalt: $ERROR_MSG"
+            exit 1
           fi
           
-      - name: Commit and push downloaded files
+          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.url')
+          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+
+      - name: Download the final file
+        run: |
+          mkdir -p "${{ env.OUTPUT_DIR }}"
+          cd "${{ env.OUTPUT_DIR }}"
+          curl -L -J -O "${{ steps.api.outputs.download_url }}"
+          echo "List of downloaded files:"
+          ls -lh
+
+      - name: Commit and push to GitHub repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ${{ env.OUTPUT_DIR }}
-          git diff --cached --quiet || git commit -m "Add downloaded YouTube video"
+          git add "${{ env.OUTPUT_DIR }}"
+          git diff --cached --quiet || git commit -m "Add downloaded video with Cobalt API"
           git push
