@@ -88,26 +88,29 @@ jobs:
           IS_AUDIO="${{ steps.format.outputs.audio }}"
 
           # Download options with PO Token support and android clint
-          YT_OPTS="--no-cookies --no-cache-dir \
-                    --extractor-retries 5 \
-                    --fragment-retries 5 \
-                    --sleep-interval 2 \
-                    --max-sleep-interval 5 \
-                    --limit-rate 10M \
-                    --add-metadata \
-                    --embed-thumbnail \
-                    -S 'vcodec:h264,res,acodec:m4a' \
-                    --extractor-args 'youtube:player_client=android,web;include_live_dash'
-                    --output '%(title)s.%(ext)s'"
+          COMMON_OPTS=(
+            --no-cookies
+            --no-cache-dir
+            --extractor-retries 5
+            --fragment-retries 5
+            --sleep-interval 2
+            --max-sleep-interval 5
+            --limit-rate 10M
+            --add-metadata
+            --embed-thumbnail
+            -S 'vcodec:h264,res,acodec:m4a'
+            --extractor-args 'youtube:player_client=android,web;include_live_dash'
+            --output '%(title)s.%(ext)s'
+          )
 
           if [ "$IS_AUDIO" = "true" ]; then
             echo "🎵 Downloading audio (MP3)..."
-            yt-dlp $YT_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
+            yt-dlp "${COMMON_OPTS[@]}" -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
           else
             echo "🎬 Downloading video..."
-            yt-dlp $YT_OPTS -f "$FORMAT" --merge-output-format mp4 "$URL"
+            yt-dlp "${COMMON_OPTS[@]}" -f "$FORMAT" --merge-output-format mp4 "$URL"
           fi
-
+          
       - name: Commit and push downloaded files
         run: |
           git config user.name "github-actions[bot]"
