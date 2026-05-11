@@ -1,0 +1,72 @@
+name: file Downloader in url - ZIP
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "file URL"
+        required: true
+        type: string
+      name:
+        description: "File name(Full.*)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Downloading
+        run: |
+          curl -L -o "${{ github.event.inputs.name }}" \
+            "${{ github.event.inputs.url }}"
+
+      - name: Compress with 7z and split if >99MB
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+          FILE_NAME="${{ github.event.inputs.name }}"
+          COMPRESSED="${FILE_NAME}.7z"
+
+          7z a -t7z -mx=9 "$COMPRESSED" "$FILE_NAME"
+
+          rm -f "$FILE_NAME"
+
+          SIZE=$(stat -c%s "$COMPRESSED")
+          LIMIT=$((99 * 1024 * 1024))
+
+          if [ $SIZE -gt $LIMIT ]; then
+            echo "📦 Compressed file ($(numfmt --to=iec $SIZE)) exceeds 99MB, splitting into 95MB parts..."
+            rm -f "${COMPRESSED}.part"*
+            split -b 95m -d "$COMPRESSED" "${COMPRESSED}.part"
+            rm -f "$COMPRESSED"
+            echo "SPLITTED=true" >> $GITHUB_ENV
+          else
+            echo "✅ Compressed file ($(numfmt --to=iec $SIZE)) is within limit"
+            echo "SPLITTED=false" >> $GITHUB_ENV
+          fi
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ "$SPLITTED" = "true" ]; then
+            git add "*.7z.part*"
+            git commit -m "Split compressed parts of ${{ github.event.inputs.name }}" || echo "No changes to commit"
+          else
+            git add "*.7z"
+            git commit -m "Compressed ${{ github.event.inputs.name }}" || echo "No changes to commit"
+          fi
+
+          git push
