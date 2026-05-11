@@ -1,30 +1,27 @@
-name: Download with Cobalt API (without cookies and PO Token)
-
+name: دانلود از یوتیوب (با کلاینت اندروید yt-dlp)
 
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'YouTube video URL'
+        description: 'لینک ویدیوی یوتیوب'
         required: true
         type: string
       quality:
-        description: 'Quality'
+        description: 'کیفیت ویدیو'
         required: false
-        default: '1080p'
+        default: '1080p (FHD)'
         type: choice
         options:
           - 2160p (4K)
           - 1440p (2K)
-          - 1080p
-          - 720p
-          - 480p
-          - 360p
-          - 144p
-          - Audio Only
+          - 1080p (FHD)
+          - 720p (HD)
+          - 480p (SD)
+          - Audio Only (MP3)
 
 env:
-  OUTPUT_DIR: Downloads
+  OUTPUT_DIR: youtube_downloads
 
 jobs:
   download:
@@ -34,65 +31,75 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      - name: دریافت کد مخزن
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq curl
-
-      - name: Making a request for the Cobalt API
-        id: prepare
+      - name: نصب yt-dlp و FFmpeg
         run: |
-          QUALITY="${{ github.event.inputs.quality }}"
-          if [[ "$QUALITY" == "Audio Only" ]]; then
-            PAYLOAD=$(jq -c -n \
-              --arg url "${{ github.event.inputs.video_url }}" \
-              '{url: $url, downloadMode: "audio", audioFormat: "mp3"}')
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install --upgrade pip
+          pip install yt-dlp
+
+      - name: تنظیم کیفیت
+        id: format
+        run: |
+          case "${{ github.event.inputs.quality }}" in
+            "2160p (4K)")
+              echo "format=bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]" >> $GITHUB_OUTPUT
+              ;;
+            "1440p (2K)")
+              echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT
+              ;;
+            "1080p (FHD)")
+              echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT
+              ;;
+            "720p (HD)")
+              echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT
+              ;;
+            "480p (SD)")
+              echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT
+              ;;
+            "Audio Only (MP3)")
+              echo "format=bestaudio" >> $GITHUB_OUTPUT
+              echo "audio=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: دانلود ویدیو با yt-dlp (حالت کلاینت اندروید)
+        run: |
+          mkdir -p ${{ env.OUTPUT_DIR }}
+          cd ${{ env.OUTPUT_DIR }}
+          URL="${{ github.event.inputs.video_url }}"
+          FORMAT="${{ steps.format.outputs.format }}"
+          IS_AUDIO="${{ steps.format.outputs.audio }}"
+
+          YT_OPTS="--no-cookies --no-cache-dir \
+                    --extractor-retries 5 \
+                    --fragment-retries 5 \
+                    --sleep-interval 2 \
+                    --max-sleep-interval 5 \
+                    --limit-rate 10M \
+                    --add-metadata \
+                    --embed-thumbnail \
+                    --extractor-args youtube:player_client=android,web \
+                    --output \"%(title)s.%(ext)s\""
+
+          if [ "$IS_AUDIO" = "true" ]; then
+            echo "🎵 در حال دانلود صدا (MP3)..."
+            yt-dlp $YT_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
           else
-            # Extract the quality number (e.g. 1080 from "1080p")
-            QUALITY_NUM=$(echo "$QUALITY" | grep -oE '[0-9]+')
-            PAYLOAD=$(jq -c -n \
-              --arg url "${{ github.event.inputs.video_url }}" \
-              --arg vq "$QUALITY_NUM" \
-              '{url: $url, videoQuality: $vq}')
+            echo "🎬 در حال دانلود ویدیو..."
+            yt-dlp $YT_OPTS -f "$FORMAT" --merge-output-format mp4 "$URL"
           fi
-          echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
 
-      - name: Cobalt API call
-        id: api
-        run: |
-          RESPONSE=$(curl -s -X POST "https://api.cobalt.tools/api/json" \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            -d '${{ steps.prepare.outputs.payload }}')
-          
-          echo "API response: $RESPONSE"
-          
-          STATUS=$(echo "$RESPONSE" | jq -r '.status')
-          if [[ "$STATUS" == "error" ]]; then
-            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error')
-            echo "::error::Error from Cobalt: $ERROR_MSG"
-            exit 1
-          fi
-          
-          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.url')
-          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
-
-      - name: Download the final file
-        run: |
-          mkdir -p "${{ env.OUTPUT_DIR }}"
-          cd "${{ env.OUTPUT_DIR }}"
-          curl -L -J -O "${{ steps.api.outputs.download_url }}"
-          echo "List of downloaded files:"
-          ls -lh
-
-      - name: Commit and push to GitHub repository
+      - name: ارسال فایل‌ها به مخزن
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ env.OUTPUT_DIR }}"
-          git diff --cached --quiet || git commit -m "Add downloaded video with Cobalt API"
+          git add ${{ env.OUTPUT_DIR }}
+          git diff --cached --quiet || git commit -m "افزودن ویدیوی دانلود شده با yt-dlp (Android Client)"
           git push
