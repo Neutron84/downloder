@@ -1,0 +1,121 @@
+name: دانلود با Cobalt API شخصی (بدون کوکی و بدون محدودیت)
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'لینک ویدیوی یوتیوب'
+        required: true
+        type: string
+      quality:
+        description: 'کیفیت'
+        required: false
+        default: '1080p'
+        type: choice
+        options:
+          - 2160p (4K)
+          - 1440p (2K)
+          - 1080p
+          - 720p
+          - 480p
+          - 360p
+          - Audio Only
+
+env:
+  OUTPUT_DIR: دانلودها
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 30
+
+    steps:
+      - name: دریافت کد مخزن
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: نصب ابزارهای مورد نیاز
+        run: sudo apt-get update && sudo apt-get install -y jq curl
+
+      - name: اجرای Cobalt API شخصی با Docker
+        run: |
+          # اجرای کانتینر Cobalt API نسخه 10 روی پورت 9000
+          docker run -d --name cobalt-api -p 9000:9000 ghcr.io/imputnet/cobalt:10
+          # صبر برای آماده شدن سرویس
+          for i in {1..10}; do
+            if curl -s http://localhost:9000/healthcheck > /dev/null; then
+              echo "Cobalt API آماده است"
+              break
+            fi
+            echo "در حال انتظار برای راه‌اندازی Cobalt... ($i)"
+            sleep 3
+          done
+
+      - name: ساخت درخواست JSON بر اساس کیفیت
+        id: prepare
+        run: |
+          QUALITY="${{ github.event.inputs.quality }}"
+          if [[ "$QUALITY" == "Audio Only" ]]; then
+            PAYLOAD=$(jq -c -n \
+              --arg url "${{ github.event.inputs.video_url }}" \
+              '{url: $url, downloadMode: "audio", audioFormat: "mp3"}')
+          else
+            # استخراج عدد کیفیت (مثلاً 1080 از "1080p")
+            QUALITY_NUM=$(echo "$QUALITY" | grep -oE '[0-9]+')
+            if [[ -z "$QUALITY_NUM" ]]; then
+              QUALITY_NUM="1080"
+            fi
+            PAYLOAD=$(jq -c -n \
+              --arg url "${{ github.event.inputs.video_url }}" \
+              --arg vq "$QUALITY_NUM" \
+              '{url: $url, videoQuality: $vq}')
+          fi
+          echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
+          echo "درخواست: $PAYLOAD"
+
+      - name: فراخوانی Cobalt API شخصی
+        id: api
+        run: |
+          RESPONSE=$(curl -s -X POST http://localhost:9000/api/json \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d '${{ steps.prepare.outputs.payload }}')
+          
+          echo "پاسخ API: $RESPONSE"
+          
+          STATUS=$(echo "$RESPONSE" | jq -r '.status')
+          if [[ "$STATUS" == "error" ]]; then
+            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error')
+            echo "::error::خطا از Cobalt شخصی: $ERROR_MSG"
+            exit 1
+          fi
+          
+          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.url')
+          FILENAME=$(echo "$RESPONSE" | jq -r '.filename')
+          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+
+      - name: دانلود فایل نهایی
+        run: |
+          mkdir -p "${{ env.OUTPUT_DIR }}"
+          cd "${{ env.OUTPUT_DIR }}"
+          echo "در حال دانلود از لینک: ${{ steps.api.outputs.download_url }}"
+          curl -L -J -O "${{ steps.api.outputs.download_url }}"
+          echo "فایل‌های دانلود شده:"
+          ls -lh
+
+      - name: متوقف کردن کانتینر Cobalt (اختیاری)
+        if: always()
+        run: docker stop cobalt-api || true
+
+      - name: ارسال فایل به مخزن گیت‌هاب
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ env.OUTPUT_DIR }}"
+          git diff --cached --quiet || git commit -m "افزودن ویدیو دانلود شده با Cobalt API شخصی"
+          git push
