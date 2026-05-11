@@ -61,6 +61,19 @@ jobs:
             sleep 3
           done
 
+
+      - name: Debug container and network
+        run: |
+          echo "=== Docker processes ==="
+          docker ps -a
+          echo "=== Container logs ==="
+          docker logs cobalt-api
+          echo "=== Check listening ports inside container ==="
+          docker exec cobalt-api netstat -tulpn || echo "netstat not available"
+          echo "=== Attempt curl with verbose ==="
+          curl -v http://localhost:9000/api/json || true
+
+
       - name: Prepare JSON request based on quality
         id: prepare
         run: |
