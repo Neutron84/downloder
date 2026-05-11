@@ -48,31 +48,16 @@ jobs:
             -e API_URL=http://0.0.0.0:9000 \
             ghcr.io/imputnet/cobalt:10
           echo "✅ Container started, waiting for service..."
-          # Wait and check logs
           sleep 5
           docker logs cobalt-api
-          # Test if API is reachable (simple GET to root might return 404 but connection is ok)
           for i in {1..15}; do
-            if curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/api/json | grep -q "200\|404\|400"; then
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/ | grep -q "200\|404\|400"; then
               echo "✅ Cobalt API is responding"
               break
             fi
             echo "⏳ Waiting for API to be ready... ($i/15)"
             sleep 3
           done
-
-
-      - name: Debug container and network
-        run: |
-          echo "=== Docker processes ==="
-          docker ps -a
-          echo "=== Container logs ==="
-          docker logs cobalt-api
-          echo "=== Check listening ports inside container ==="
-          docker exec cobalt-api netstat -tulpn || echo "netstat not available"
-          echo "=== Attempt curl with verbose ==="
-          curl -v http://localhost:9000/api/json || true
-
 
       - name: Prepare JSON request based on quality
         id: prepare
@@ -98,7 +83,7 @@ jobs:
       - name: Call Cobalt API (self-hosted)
         id: api
         run: |
-          RESPONSE=$(curl -s -X POST http://localhost:9000/api/json \
+          RESPONSE=$(curl -s -X POST http://localhost:9000/ \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -d '${{ steps.prepare.outputs.payload }}')
