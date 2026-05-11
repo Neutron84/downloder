@@ -1,4 +1,4 @@
-name: YouTube Downloader (No Cookies + PO Token support)
+name: YouTube Downloader (No Cookies + js & PO Token support)
 
 on:
   workflow_dispatch:
@@ -37,11 +37,11 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+
       - name: Install Deno (JavaScript Runtime)
         run: |
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
-
 
       - name: Install yt-dlp & FFmpeg & PO Token Plugin
         run: |
@@ -49,7 +49,6 @@ jobs:
           sudo apt-get install -y ffmpeg
           python3 -m pip install --upgrade pip
           pip install yt-dlp
-          
           pip install bgutil-ytdlp-pot-provider
 
       - name: Set format based on quality
@@ -88,7 +87,7 @@ jobs:
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
 
-          # Download options with PO Token support
+          # Download options with PO Token support and android clint
           YT_OPTS="--no-cookies --no-cache-dir \
                     --extractor-retries 5 \
                     --fragment-retries 5 \
@@ -97,6 +96,8 @@ jobs:
                     --limit-rate 10M \
                     --add-metadata \
                     --embed-thumbnail \
+                    -S \"vcodec:h264,res,acodec:m4a\" \
+                    --extractor-args \"youtube:player_client=android,web;include_live_dash\" \
                     --output \"%(title)s.%(ext)s\""
 
           if [ "$IS_AUDIO" = "true" ]; then
