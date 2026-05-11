@@ -91,15 +91,14 @@ jobs:
           COMMON_OPTS=(
             --no-cookies
             --no-cache-dir
-            --extractor-retries 5
-            --fragment-retries 5
-            --sleep-interval 2
-            --max-sleep-interval 5
-            --limit-rate 10M
+            --extractor-retries 10
+            --fragment-retries 10
+            --sleep-interval 5
+            --limit-rate 5M
             --add-metadata
             --embed-thumbnail
             -S 'vcodec:h264,res,acodec:m4a'
-            --extractor-args 'youtube:player_client=android,web;include_live_dash'
+            --extractor-args 'youtube:player_client=android'
             --output '%(title)s.%(ext)s'
           )
 
