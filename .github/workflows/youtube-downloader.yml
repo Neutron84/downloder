@@ -1,0 +1,113 @@
+name: YouTube Downloader (No Cookies - با پشتیبانی PO Token)
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      quality:
+        description: 'Video quality'
+        required: false
+        default: '1080p (FHD)'
+        type: choice
+        options:
+          - 2160p (4K)
+          - 1440p (2K)
+          - 1080p (FHD)
+          - 720p (HD)
+          - 480p (SD)
+          - 360p
+          - Audio Only (MP3)
+
+env:
+  OUTPUT_DIR: youtube_downloads
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install dependencies (yt-dlp + FFmpeg + PO Token plugin)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install --upgrade pip
+          pip install yt-dlp
+
+          # نصب پلاگین PO Token Provider (نسخه bgutil)
+          pip install https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/main.zip
+
+      - name: Set format based on quality
+        id: format
+        run: |
+          case "${{ github.event.inputs.quality }}" in
+            "2160p (4K)")
+              echo "format=bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]" >> $GITHUB_OUTPUT
+              ;;
+            "1440p (2K)")
+              echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT
+              ;;
+            "1080p (FHD)")
+              echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT
+              ;;
+            "720p (HD)")
+              echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT
+              ;;
+            "480p (SD)")
+              echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT
+              ;;
+            "360p")
+              echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]" >> $GITHUB_OUTPUT
+              ;;
+            "Audio Only (MP3)")
+              echo "format=bestaudio" >> $GITHUB_OUTPUT
+              echo "audio=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: Download video with yt-dlp (با پشتیبانی PO Token)
+        run: |
+          mkdir -p ${{ env.OUTPUT_DIR }}
+          cd ${{ env.OUTPUT_DIR }}
+          URL="${{ github.event.inputs.video_url }}"
+          FORMAT="${{ steps.format.outputs.format }}"
+          IS_AUDIO="${{ steps.format.outputs.audio }}"
+
+          # فعال کردن PO Token Provider پلاگین و غیرفعال کردن کوکی
+          YT_OPTS="--no-cookies \
+                    --extractor-args youtube:pot_provider=bgutil:http \
+                    --extractor-retries 10 \
+                    --fragment-retries 10 \
+                    --sleep-interval 2 \
+                    --max-sleep-interval 5 \
+                    --limit-rate 10M \
+                    --add-metadata \
+                    --embed-thumbnail \
+                    --output \"%(title)s.%(ext)s\""
+
+          if [ "$IS_AUDIO" = "true" ]; then
+            echo "🎵 Downloading audio (MP3)..."
+            yt-dlp $YT_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
+          else
+            echo "🎬 Downloading video..."
+            yt-dlp $YT_OPTS -f "$FORMAT" --merge-output-format mp4 "$URL"
+          fi
+
+      - name: Commit and push downloaded files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.OUTPUT_DIR }}
+          git diff --cached --quiet || git commit -m "Add downloaded YouTube video"
+          git push
