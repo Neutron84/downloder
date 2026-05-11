@@ -37,6 +37,11 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+      - name: Install Deno (JavaScript Runtime)
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+
 
       - name: Install yt-dlp & FFmpeg & PO Token Plugin
         run: |
