@@ -38,18 +38,24 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install Deno (JavaScript Runtime)
-        run: |
-          curl -fsSL https://deno.land/install.sh | sh
-          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+      # Added: Install Docker (required to run the PO Token Provider)
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
 
-      - name: Install yt-dlp & FFmpeg & PO Token Plugin
+      - name: Install yt-dlp, FFmpeg, and PO Token Provider
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           python3 -m pip install --upgrade pip
           pip install yt-dlp
           pip install bgutil-ytdlp-pot-provider
+
+
+      - name: Install and Run PO Token Provider
+        run: |
+          chmod +x ./install-provider.sh
+          ./install-provider.sh
+          curl --retry 5 --retry-delay 2 --fail --silent http://localhost:4416 || exit 1
 
       - name: Set format based on quality
         id: format
@@ -87,18 +93,18 @@ jobs:
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
 
-          # Download options with PO Token support and android clint
           COMMON_OPTS=(
             --no-cookies
             --no-cache-dir
             --extractor-retries 10
             --fragment-retries 10
             --sleep-interval 5
+            --max-sleep-interval 5
             --limit-rate 5M
             --add-metadata
             --embed-thumbnail
             -S 'vcodec:h264,res,acodec:m4a'
-            --extractor-args 'youtube:player_client=android'
+            --extractor-args 'youtube:player_client=android,web;include_live_dash;po_token_provider=bgutil:http://localhost:4416'
             --output '%(title)s.%(ext)s'
           )
 
