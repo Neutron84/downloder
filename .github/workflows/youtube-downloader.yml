@@ -96,9 +96,9 @@ jobs:
                     --limit-rate 10M \
                     --add-metadata \
                     --embed-thumbnail \
-                    -S \"vcodec:h264,res,acodec:m4a\" \
-                    --extractor-args \"youtube:player_client=android,web;include_live_dash\" \
-                    --output \"%(title)s.%(ext)s\""
+                    -S 'vcodec:h264,res,acodec:m4a' \
+                    --extractor-args 'youtube:player_client=android,web;include_live_dash'
+                    --output '%(title)s.%(ext)s'"
 
           if [ "$IS_AUDIO" = "true" ]; then
             echo "🎵 Downloading audio (MP3)..."
