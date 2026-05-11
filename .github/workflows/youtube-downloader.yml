@@ -1,4 +1,4 @@
-name: YouTube Downloader (No Cookies - با پشتیبانی PO Token)
+name: YouTube Downloader (No Cookies + PO Token support)
 
 on:
   workflow_dispatch:
@@ -38,15 +38,14 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install dependencies (yt-dlp + FFmpeg + PO Token plugin)
+      - name: Install yt-dlp & FFmpeg & PO Token Plugin
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           python3 -m pip install --upgrade pip
           pip install yt-dlp
-
-          # نصب پلاگین PO Token Provider (نسخه bgutil)
-          pip install https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/main.zip
+          
+          pip install bgutil-ytdlp-pot-provider
 
       - name: Set format based on quality
         id: format
@@ -76,7 +75,7 @@ jobs:
               ;;
           esac
 
-      - name: Download video with yt-dlp (با پشتیبانی PO Token)
+      - name: Download video with yt-dlp
         run: |
           mkdir -p ${{ env.OUTPUT_DIR }}
           cd ${{ env.OUTPUT_DIR }}
@@ -84,11 +83,10 @@ jobs:
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
 
-          # فعال کردن PO Token Provider پلاگین و غیرفعال کردن کوکی
-          YT_OPTS="--no-cookies \
-                    --extractor-args youtube:pot_provider=bgutil:http \
-                    --extractor-retries 10 \
-                    --fragment-retries 10 \
+          # Download options with PO Token support
+          YT_OPTS="--no-cookies --no-cache-dir \
+                    --extractor-retries 5 \
+                    --fragment-retries 5 \
                     --sleep-interval 2 \
                     --max-sleep-interval 5 \
                     --limit-rate 10M \
