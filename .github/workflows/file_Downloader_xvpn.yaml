@@ -1,0 +1,131 @@
+name: Build for Arch Linux & Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g., v1.0.0)"
+        required: true
+        type: string
+        default: "v1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - os: linux
+            arch: amd64
+            output_name: xvpn-linux-amd64
+            extension: ""
+            artifact_dir: linux
+          - os: windows
+            arch: amd64
+            output_name: xvpn-windows-amd64
+            extension: .exe
+            artifact_dir: windows
+          - os: linux
+            arch: arm64
+            output_name: xvpn-linux-arm64
+            extension: ""
+            artifact_dir: linux-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Go (if using Go, adjust as needed)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install dependencies for Arch Linux build (cross-compile)
+        run: |
+          sudo apt-get update
+          # Cross-compilation tools for Linux
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64
+
+      - name: Build for ${{ matrix.target.os }}-${{ matrix.target.arch }}
+        run: |
+          mkdir -p build_output
+          OUTPUT_NAME="${{ matrix.target.output_name }}${{ matrix.target.extension }}"
+          
+          # تنظیم متغیرهای محیطی برای کراس کامپایل
+          if [ "${{ matrix.target.os }}" = "windows" ]; then
+            GOOS=windows GOARCH=${{ matrix.target.arch }} CGO_ENABLED=0 go build -ldflags="-s -w" -o "build_output/$OUTPUT_NAME" .
+          elif [ "${{ matrix.target.os }}" = "linux" ]; then
+            GOOS=linux GOARCH=${{ matrix.target.arch }} CGO_ENABLED=0 go build -ldflags="-s -w" -o "build_output/$OUTPUT_NAME" .
+          fi
+
+      - name: Create archive for Linux builds
+        if: matrix.target.os == 'linux'
+        run: |
+          cd build_output
+          tar -czf "../${{ matrix.target.output_name }}.tar.gz" "${{ matrix.target.output_name }}${{ matrix.target.extension }}"
+          cd ..
+          rm -rf build_output
+
+      - name: Create archive for Windows build
+        if: matrix.target.os == 'windows'
+        run: |
+          cd build_output
+          zip "../${{ matrix.target.output_name }}.zip" "${{ matrix.target.output_name }}${{ matrix.target.extension }}"
+          cd ..
+          rm -rf build_output
+
+      - name: Compress and split large files (if needed)
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+          for file in *.tar.gz *.zip; do
+            if [ -f "$file" ]; then
+              SIZE=$(stat -c%s "$file")
+              LIMIT=$((99 * 1024 * 1024))
+              
+              if [ $SIZE -gt $LIMIT ]; then
+                echo "📦 $file ($(numfmt --to=iec $SIZE)) exceeds 99MB, compressing with 7z..."
+                7z a -t7z -mx=9 "${file}.7z" "$file"
+                rm -f "$file"
+                
+                # Split if still large
+                SIZE7Z=$(stat -c%s "${file}.7z")
+                if [ $SIZE7Z -gt $LIMIT ]; then
+                  echo "📦 Still large, splitting into 95MB parts..."
+                  split -b 95m -d "${file}.7z" "${file}.7z.part"
+                  rm -f "${file}.7z"
+                fi
+              fi
+            fi
+          done
+
+      - name: Commit and push builds
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # ایجاد دایرکتوری releases با تگ ورژن
+          mkdir -p "releases/${{ github.event.inputs.version }}"
+          
+          # انتقال فایل‌های ساخته شده به دایرکتوری نسخه
+          mv *.tar.gz *.zip *.7z* "releases/${{ github.event.inputs.version }}" 2>/dev/null || true
+          
+          # افزودن فایل‌ها به git
+          git add "releases/${{ github.event.inputs.version }}/*"
+          
+          # commit با پیام مناسب
+          git commit -m "Build release ${{ github.event.inputs.version }} for Arch Linux & Windows" || echo "No changes to commit"
+          
+          # push به ریپازیتوری
+          git push
+
+      - name: Create release tag (optional)
+        run: |
+          git tag -a "${{ github.event.inputs.version }}" -m "Release ${{ github.event.inputs.version }}" || echo "Tag already exists"
+          git push origin "${{ github.event.inputs.version }}" || echo "Tag push failed"
