@@ -1,4 +1,4 @@
-name: دانلود از یوتیوب (با کلاینت اندروید yt-dlp)
+name: دانلود یوتیوب با کوکی ذخیره شده
 
 on:
   workflow_dispatch:
@@ -8,20 +8,21 @@ on:
         required: true
         type: string
       quality:
-        description: 'کیفیت ویدیو'
+        description: 'کیفیت'
         required: false
-        default: '1080p (FHD)'
+        default: '1080p'
         type: choice
         options:
           - 2160p (4K)
           - 1440p (2K)
-          - 1080p (FHD)
-          - 720p (HD)
-          - 480p (SD)
-          - Audio Only (MP3)
+          - 1080p
+          - 720p
+          - 480p
+          - 360p
+          - Audio Only
 
 env:
-  OUTPUT_DIR: youtube_downloads
+  OUTPUT_DIR: downloads
 
 jobs:
   download:
@@ -31,75 +32,66 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: دریافت کد مخزن
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: نصب yt-dlp و FFmpeg
+      - name: نصب yt-dlp و ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          python3 -m pip install --upgrade pip
-          pip install yt-dlp
+          pip install --upgrade yt-dlp
+
+      - name: ذخیره کوکی از secret
+        run: |
+          echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
 
       - name: تنظیم کیفیت
         id: format
         run: |
           case "${{ github.event.inputs.quality }}" in
             "2160p (4K)")
-              echo "format=bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]" >> $GITHUB_OUTPUT
-              ;;
+              echo "format=bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]" >> $GITHUB_OUTPUT ;;
             "1440p (2K)")
-              echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT
-              ;;
-            "1080p (FHD)")
-              echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT
-              ;;
-            "720p (HD)")
-              echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT
-              ;;
-            "480p (SD)")
-              echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT
-              ;;
-            "Audio Only (MP3)")
+              echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT ;;
+            "1080p")
+              echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT ;;
+            "720p")
+              echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT ;;
+            "480p")
+              echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT ;;
+            "360p")
+              echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]" >> $GITHUB_OUTPUT ;;
+            "Audio Only")
               echo "format=bestaudio" >> $GITHUB_OUTPUT
-              echo "audio=true" >> $GITHUB_OUTPUT
-              ;;
+              echo "audio=true" >> $GITHUB_OUTPUT ;;
           esac
 
-      - name: دانلود ویدیو با yt-dlp (حالت کلاینت اندروید)
+      - name: دانلود ویدیو با cookies
         run: |
-          mkdir -p ${{ env.OUTPUT_DIR }}
-          cd ${{ env.OUTPUT_DIR }}
+          mkdir -p "${{ env.OUTPUT_DIR }}"
+          cd "${{ env.OUTPUT_DIR }}"
           URL="${{ github.event.inputs.video_url }}"
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
 
-          YT_OPTS="--no-cookies --no-cache-dir \
-                    --extractor-retries 5 \
-                    --fragment-retries 5 \
-                    --sleep-interval 2 \
-                    --max-sleep-interval 5 \
-                    --limit-rate 10M \
-                    --add-metadata \
-                    --embed-thumbnail \
-                    --extractor-args youtube:player_client=android,web \
-                    --output \"%(title)s.%(ext)s\""
+          COMMON_OPTS=(--cookies ../cookies.txt --no-cache-dir --extractor-retries 10 --fragment-retries 10 --add-metadata --embed-thumbnail --output "%(title)s.%(ext)s")
 
           if [ "$IS_AUDIO" = "true" ]; then
-            echo "🎵 در حال دانلود صدا (MP3)..."
-            yt-dlp $YT_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
+            yt-dlp "${COMMON_OPTS[@]}" -f "$FORMAT" --extract-audio --audio-format mp3 "$URL"
           else
-            echo "🎬 در حال دانلود ویدیو..."
-            yt-dlp $YT_OPTS -f "$FORMAT" --merge-output-format mp4 "$URL"
+            yt-dlp "${COMMON_OPTS[@]}" -f "$FORMAT" --merge-output-format mp4 "$URL"
           fi
 
-      - name: ارسال فایل‌ها به مخزن
+      - name: پاک کردن فایل کوکی
+        run: rm cookies.txt
+
+      - name: ارسال فایل به مخزن
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ${{ env.OUTPUT_DIR }}
-          git diff --cached --quiet || git commit -m "افزودن ویدیوی دانلود شده با yt-dlp (Android Client)"
+          git add "${{ env.OUTPUT_DIR }}"
+          git diff --cached --quiet || git commit -m "دانلود ویدیو با کوکی"
           git push
