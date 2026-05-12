@@ -1,4 +1,4 @@
-name: دانلود ویدیو با API جدید (alexbic)
+name: دانلود یوتیوب (بدون کوکی و با PO Token ابری)
 
 on:
   workflow_dispatch:
@@ -18,10 +18,11 @@ on:
           - 1080p
           - 720p
           - 480p
+          - 360p
           - Audio Only
 
 env:
-  OUTPUT_DIR: downloads
+  OUTPUT_DIR: youtube_downloads
 
 jobs:
   download:
@@ -37,87 +38,65 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: نصب ابزارهای مورد نیاز
-        run: sudo apt-get update && sudo apt-get install -y jq curl
-
-      # =================================================
-      # استقرار API قدرتمند جدید
-      # =================================================
-      - name: اجرای YouTube Downloader API با Docker
+      - name: نصب yt-dlp و FFmpeg و ابزار PO Token
         run: |
-          docker run -d --name youtube-api -p 5000:5000 alexbic/youtube-downloader-api:latest
-          echo "در انتظار راه‌اندازی API..."
-          for i in {1..15}; do
-            if curl -s http://localhost:5000/health | grep -q "healthy"; then
-              echo "✅ API با موفقیت راه‌اندازی شد."
-              break
-            fi
-            sleep 3
-          done
-      # =================================================
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install --upgrade pip
+          pip install yt-dlp
+          pip install yt-dlp-get-pot
 
-      - name: ساخت درخواست نهایی (JSON)
-        id: prepare
+      - name: تنظیم فرمت بر اساس کیفیت
+        id: format
         run: |
-          QUALITY_INPUT="${{ github.event.inputs.quality }}"
-          if [[ "$QUALITY_INPUT" == "Audio Only" ]]; then
-            DOWNLOAD_MODE="audio"
-            FORMAT="mp3"
-            PAYLOAD=$(jq -c -n \
-              --arg url "${{ github.event.inputs.video_url }}" \
-              --arg dm "$DOWNLOAD_MODE" \
-              --arg af "$FORMAT" \
-              '{url: $url, download_mode: $dm, audio_format: $af}')
+          case "${{ github.event.inputs.quality }}" in
+            "2160p (4K)")
+              echo "format=bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]" >> $GITHUB_OUTPUT
+              ;;
+            "1440p (2K)")
+              echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT
+              ;;
+            "1080p")
+              echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT
+              ;;
+            "720p")
+              echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT
+              ;;
+            "480p")
+              echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT
+              ;;
+            "360p")
+              echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]" >> $GITHUB_OUTPUT
+              ;;
+            "Audio Only")
+              echo "format=bestaudio" >> $GITHUB_OUTPUT
+              echo "audio=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: دانلود با yt-dlp-get-pot (استفاده از سرور ابری PO Token)
+        run: |
+          mkdir -p ${{ env.OUTPUT_DIR }}
+          cd ${{ env.OUTPUT_DIR }}
+          URL="${{ github.event.inputs.video_url }}"
+          FORMAT="${{ steps.format.outputs.format }}"
+          IS_AUDIO="${{ steps.format.outputs.audio }}"
+
+          # گزینه‌های پایه
+          OPTS=(--no-cookies --no-cache-dir --extractor-retries 10 --fragment-retries 10 --output '%(title)s.%(ext)s')
+
+          if [ "$IS_AUDIO" = "true" ]; then
+            echo "🎵 در حال دانلود صدا..."
+            yt-dlp-get-pot "${OPTS[@]}" -f "$FORMAT" --extract-audio --audio-format mp3 "$URL"
           else
-            QUALITY_NUM=$(echo "$QUALITY_INPUT" | grep -oE '[0-9]+')
-            if [[ -z "$QUALITY_NUM" ]]; then QUALITY_NUM="1080"; fi
-            PAYLOAD=$(jq -c -n \
-              --arg url "${{ github.event.inputs.video_url }}" \
-              --arg vq "$QUALITY_NUM" \
-              '{url: $url, video_quality: $vq}')
-          fi
-          echo "payload=$PAYLOAD" >> $GITHUB_OUTPUT
-          echo "Request payload: $PAYLOAD"
-
-      - name: فراخوانی API و دریافت لینک دانلود
-        id: api
-        run: |
-          RESPONSE=$(curl -s -X POST http://localhost:5000/download_video \
-            -H "Content-Type: application/json" \
-            -d '${{ steps.prepare.outputs.payload }}')
-          
-          echo "پاسخ API: $RESPONSE"
-          
-          if [[ -z "$RESPONSE" || "$RESPONSE" == "null" ]]; then
-            echo "::error::خطا در پردازش درخواست توسط API"
-            exit 1
+            echo "🎬 در حال دانلود ویدیو..."
+            yt-dlp-get-pot "${OPTS[@]}" -f "$FORMAT" --merge-output-format mp4 "$URL"
           fi
 
-          # تلاش برای استخراج لینک دانلود (بر اساس پاسخ API)
-          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r '.download_url // .url // .result')
-          if [[ -z "$DOWNLOAD_URL" || "$DOWNLOAD_URL" == "null" ]]; then
-            echo "::error::خطا: امکان دریافت لینک دانلود وجود ندارد. پاسخ API: $RESPONSE"
-            exit 1
-          fi
-
-          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
-          echo "لینک دانلود مستقیم دریافت شد."
-
-      - name: دریافت فایل نهایی
+      - name: ارسال فایل به مخزن
         run: |
-          mkdir -p "${{ env.OUTPUT_DIR }}"
-          cd "${{ env.OUTPUT_DIR }}"
-          echo "در حال دانلود فایل..."
-          curl -L -J -O "${{ steps.api.outputs.download_url }}"
-          echo "دانلود انجام شد. فایل‌های موجود:"
-          ls -lh
-
-      - name: پاک‌سازی و ارسال به مخزن
-        if: always()
-        run: |
-          docker stop youtube-api || true
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ env.OUTPUT_DIR }}"
-          git diff --cached --quiet || git commit -m "افزودن ویدیوی دانلود شده با alexbic/youtube-downloader-api"
+          git add ${{ env.OUTPUT_DIR }}
+          git diff --cached --quiet || git commit -m "افزودن ویدیوی دانلود شده با PO Token ابری"
           git push
