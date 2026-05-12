@@ -1,52 +1,45 @@
-name: دانلود یوتیوب (بدون کوکی و با PO Token ابری)
-
+name: YouTube Downloader (بدون کوکی - کلاینت اندروید VR)
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'لینک ویدیوی یوتیوب'
+        description: 'YouTube video URL'
         required: true
         type: string
       quality:
-        description: 'کیفیت'
+        description: 'Video quality'
         required: false
-        default: '1080p'
+        default: '1080p (FHD)'
         type: choice
         options:
           - 2160p (4K)
           - 1440p (2K)
-          - 1080p
-          - 720p
-          - 480p
+          - 1080p (FHD)
+          - 720p (HD)
+          - 480p (SD)
           - 360p
-          - Audio Only
-
+          - Audio Only (MP3)
 env:
   OUTPUT_DIR: youtube_downloads
-
 jobs:
   download:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     timeout-minutes: 30
-
     steps:
-      - name: دریافت کد مخزن
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-
-      - name: نصب yt-dlp و FFmpeg و ابزار PO Token
+      - name: Install yt-dlp & FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           python3 -m pip install --upgrade pip
           pip install yt-dlp
-          pip install yt-dlp-get-pot
-
-      - name: تنظیم فرمت بر اساس کیفیت
+      - name: Set format based on quality
         id: format
         run: |
           case "${{ github.event.inputs.quality }}" in
@@ -56,47 +49,51 @@ jobs:
             "1440p (2K)")
               echo "format=bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]" >> $GITHUB_OUTPUT
               ;;
-            "1080p")
+            "1080p (FHD)")
               echo "format=bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]" >> $GITHUB_OUTPUT
               ;;
-            "720p")
+            "720p (HD)")
               echo "format=bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]" >> $GITHUB_OUTPUT
               ;;
-            "480p")
+            "480p (SD)")
               echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT
               ;;
             "360p")
               echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]" >> $GITHUB_OUTPUT
               ;;
-            "Audio Only")
+            "Audio Only (MP3)")
               echo "format=bestaudio" >> $GITHUB_OUTPUT
               echo "audio=true" >> $GITHUB_OUTPUT
               ;;
           esac
-
-      - name: دانلود با yt-dlp-get-pot (استفاده از سرور ابری PO Token)
+      - name: Download video with yt-dlp
         run: |
           mkdir -p ${{ env.OUTPUT_DIR }}
           cd ${{ env.OUTPUT_DIR }}
           URL="${{ github.event.inputs.video_url }}"
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
-
-          # گزینه‌های پایه
-          OPTS=(--no-cookies --no-cache-dir --extractor-retries 10 --fragment-retries 10 --output '%(title)s.%(ext)s')
-
+          YT_OPTS="--no-cookies --no-cache-dir \
+                    --extractor-retries 5 \
+                    --fragment-retries 5 \
+                    --sleep-interval 2 \
+                    --max-sleep-interval 5 \
+                    --limit-rate 10M \
+                    --add-metadata \
+                    --embed-thumbnail \
+                    --extractor-args \"youtube:player_client=android_vr\" \
+                    --output \"%(title)s.%(ext)s\""
           if [ "$IS_AUDIO" = "true" ]; then
-            echo "🎵 در حال دانلود صدا..."
-            yt-dlp-get-pot "${OPTS[@]}" -f "$FORMAT" --extract-audio --audio-format mp3 "$URL"
+            echo "🎵 Downloading audio (MP3)..."
+            yt-dlp $YT_OPTS -f "$FORMAT" --extract-audio --audio-format mp3 --audio-quality 0 "$URL"
           else
-            echo "🎬 در حال دانلود ویدیو..."
-            yt-dlp-get-pot "${OPTS[@]}" -f "$FORMAT" --merge-output-format mp4 "$URL"
+            echo "🎬 Downloading video..."
+            yt-dlp $YT_OPTS -f "$FORMAT" --merge-output-format mp4 "$URL"
           fi
-
-      - name: ارسال فایل به مخزن
+      - name: Commit and push downloaded files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ env.OUTPUT_DIR }}
-          git diff --cached --quiet || git commit -m "افزودن ویدیوی دانلود شده با PO Token ابری"
+          git diff --cached --quiet || git commit -m "Add downloaded YouTube video"
           git push
