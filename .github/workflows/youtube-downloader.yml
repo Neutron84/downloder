@@ -1,4 +1,4 @@
-name: دانلود یوتیوب با کوکی (روش امن)
+name: YouTube Downloader با Deno و EJS
 
 on:
   workflow_dispatch:
@@ -32,24 +32,36 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # 1. دریافت کد مخزن
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: نصب yt-dlp و ffmpeg
+      # 2. نصب ابزارهای اولیه
+      - name: نصب yt-dlp، FFmpeg و EJS
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          pip install --upgrade yt-dlp
+          python3 -m pip install --upgrade pip
+          # نصب yt-dlp و EJS Scripts
+          pip install yt-dlp yt-dlp-ejs
 
-      - name: ذخیره کوکی از secret (بدون تفسیر توسط bash)
+      # 3. نصب Deno (JS Runtime)
+      - name: نصب Deno
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+
+      # 4. ذخیره کوکی (اختیاری)
+      - name: ذخیره کوکی از secret
         run: |
           cat << 'EOF' > cookies.txt
           ${{ secrets.YOUTUBE_COOKIES }}
           EOF
 
+      # 5. تنظیم کیفیت
       - name: تنظیم کیفیت
         id: format
         run: |
@@ -65,13 +77,14 @@ jobs:
             "480p")
               echo "format=bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]" >> $GITHUB_OUTPUT ;;
             "360p")
-              echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]" >> $GITHUB_OUTPUT ;;
+              echo "format=bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[360]" >> $GITHUB_OUTPUT ;;
             "Audio Only")
               echo "format=bestaudio" >> $GITHUB_OUTPUT
               echo "audio=true" >> $GITHUB_OUTPUT ;;
           esac
 
-      - name: دانلود ویدیو با کوکی
+      # 6. دانلود ویدیو (با کوکی، Deno و EJS)
+      - name: دانلود ویدیو
         run: |
           mkdir -p "${{ env.OUTPUT_DIR }}"
           cd "${{ env.OUTPUT_DIR }}"
@@ -79,6 +92,7 @@ jobs:
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
 
+          # استفاده از android به عنوان اولویت برای افزایش شانس موفقیت
           if [ "$IS_AUDIO" = "true" ]; then
             yt-dlp --cookies ../cookies.txt \
               --no-cache-dir \
@@ -86,6 +100,8 @@ jobs:
               --fragment-retries 10 \
               --add-metadata \
               --embed-thumbnail \
+              --remote-components ejs:github \
+              --extractor-args "youtube:player_client=android,web" \
               -f "$FORMAT" \
               --extract-audio \
               --audio-format mp3 \
@@ -98,19 +114,20 @@ jobs:
               --fragment-retries 10 \
               --add-metadata \
               --embed-thumbnail \
+              --remote-components ejs:github \
+              --extractor-args "youtube:player_client=android,web" \
               -f "$FORMAT" \
               --merge-output-format mp4 \
               --output "%(title)s.%(ext)s" \
               "$URL"
           fi
 
-      - name: پاک کردن فایل کوکی
-        run: rm cookies.txt
-
-      - name: ارسال فایل به مخزن
+      # 7. پاک کردن و ارسال فایل
+      - name: پاک کردن کوکی و ارسال به مخزن
         run: |
+          rm cookies.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${{ env.OUTPUT_DIR }}"
-          git diff --cached --quiet || git commit -m "دانلود ویدیو با کوکی"
+          git diff --cached --quiet || git commit -m "دانلود ویدیو با Deno و EJS"
           git push
