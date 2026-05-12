@@ -81,7 +81,7 @@ jobs:
                     --limit-rate 10M \
                     --add-metadata \
                     --embed-thumbnail \
-                    --extractor-args \"youtube:player_client=android_vr\" \
+                    --extractor-args "youtube:player_client=web_embedded" \
                     --output \"%(title)s.%(ext)s\""
           if [ "$IS_AUDIO" = "true" ]; then
             echo "🎵 Downloading audio (MP3)..."
