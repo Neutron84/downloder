@@ -1,4 +1,4 @@
-name: دانلود یوتیوب با کوکی ذخیره شده
+name: دانلود یوتیوب با کوکی (روش امن)
 
 on:
   workflow_dispatch:
@@ -44,9 +44,11 @@ jobs:
           sudo apt-get install -y ffmpeg
           pip install --upgrade yt-dlp
 
-      - name: ذخیره کوکی از secret
+      - name: ذخیره کوکی از secret (بدون تفسیر توسط bash)
         run: |
-          echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
+          cat << 'EOF' > cookies.txt
+          ${{ secrets.YOUTUBE_COOKIES }}
+          EOF
 
       - name: تنظیم کیفیت
         id: format
@@ -69,7 +71,7 @@ jobs:
               echo "audio=true" >> $GITHUB_OUTPUT ;;
           esac
 
-      - name: دانلود ویدیو با cookies
+      - name: دانلود ویدیو با کوکی
         run: |
           mkdir -p "${{ env.OUTPUT_DIR }}"
           cd "${{ env.OUTPUT_DIR }}"
@@ -77,12 +79,29 @@ jobs:
           FORMAT="${{ steps.format.outputs.format }}"
           IS_AUDIO="${{ steps.format.outputs.audio }}"
 
-          COMMON_OPTS=(--cookies ../cookies.txt --no-cache-dir --extractor-retries 10 --fragment-retries 10 --add-metadata --embed-thumbnail --output "%(title)s.%(ext)s")
-
           if [ "$IS_AUDIO" = "true" ]; then
-            yt-dlp "${COMMON_OPTS[@]}" -f "$FORMAT" --extract-audio --audio-format mp3 "$URL"
+            yt-dlp --cookies ../cookies.txt \
+              --no-cache-dir \
+              --extractor-retries 10 \
+              --fragment-retries 10 \
+              --add-metadata \
+              --embed-thumbnail \
+              -f "$FORMAT" \
+              --extract-audio \
+              --audio-format mp3 \
+              --output "%(title)s.%(ext)s" \
+              "$URL"
           else
-            yt-dlp "${COMMON_OPTS[@]}" -f "$FORMAT" --merge-output-format mp4 "$URL"
+            yt-dlp --cookies ../cookies.txt \
+              --no-cache-dir \
+              --extractor-retries 10 \
+              --fragment-retries 10 \
+              --add-metadata \
+              --embed-thumbnail \
+              -f "$FORMAT" \
+              --merge-output-format mp4 \
+              --output "%(title)s.%(ext)s" \
+              "$URL"
           fi
 
       - name: پاک کردن فایل کوکی
